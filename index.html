@@ -507,7 +507,7 @@ function setBpm(v){bpm=Math.round(+v);$('#bpm').value=bpm;$('#bpmV').textContent
 function setMode(m){mode=m;document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));}
 function reset(){
   events.forEach(e=>{e.state='pending';e.wrong=0;e.rt=0;});
-  idx=0;hits=0;misses=0;running=false;paused=false;finished=false;scrollBeat=0;lastClickBeat=-99;onsetFlag=true;lastHitPc=null;lastJudged=null;
+  idx=0;hits=0;misses=0;running=false;paused=false;finished=false;scrollBeat=0;lastClickBeat=-99;onsetFlag=true;lastHitPc=null;lastJudged=null;recent=[];wrongCand=null;
   $('#sheet').classList.remove('on');$('#count').style.opacity=0;$('#startBtn').textContent='▶ Start';keepAwake(false);updHud();}
 function start(){
   ensureAC();
@@ -519,10 +519,20 @@ function start(){
   else if(!paused){paused=true;pauseAt=performance.now();$('#startBtn').textContent='▶ Weiter';}
   else{paused=false;const d=performance.now()-pauseAt;if(mode==='tempo')t0+=d;curStart+=d;$('#startBtn').textContent='⏸ Pause';}}
 function flash(k){const st=$('#stage');st.classList.add(k);clearTimeout(flash['t'+k]);flash['t'+k]=setTimeout(()=>st.classList.remove(k),220);}
+// Nachklingende Saiten, Obertöne (Oktave, Quinte darüber) und Anschlaggeräusche sind kein Fehlgriff
+let wrongCand=null,recent=[];
+const related=(m,ref)=>m>=ref-1&&(pc(m)===pc(ref)||(m>ref+5&&pc(m)===pc(ref+7)));
+function isWrong(ev){
+  const m=stableMidi,now=performance.now();
+  if(matches(ev)||related(m,ev.midi))return false;
+  if(lastOnsetT<lastHitTime+120)return false;          // kein neuer Anschlag seit dem letzten Treffer
+  if(now-lastOnsetT<120)return false;                   // Anschlag selbst ist noch unruhig
+  for(const r of recent)if(related(m,r)||pc(m)===pc(r))return false; // klingt noch nach
+  return true;}
 function hitCurrent(manual){
   const ev=events[idx];if(!ev)return;
   ev.state=manual?'skip':'hit';if(!manual){hits++;ev.rt=(performance.now()-curStart)/1000;flash('good');}
-  lastHitPc=pc(ev.midi);lastHitTime=performance.now();onsetFlag=false;lastJudged=stableMidi;
+  lastHitPc=pc(ev.midi);lastHitTime=performance.now();onsetFlag=false;lastJudged=stableMidi;wrongCand=null;recent.unshift(ev.midi);recent.length=Math.min(recent.length,4);
   idx++;curStart=performance.now();
   if(idx>=events.length)finish();else if($('#autoPlay').checked)setTimeout(()=>pluck(events[idx].midi),120);
   updHud();}
@@ -536,11 +546,11 @@ function tick(){
       const ev=events[idx];
       if(ev){
         if(matches(ev)&&(lastHitPc!==pc(ev.midi)||onsetFlag))hitCurrent(false);
-        else if(stableMidi!==null&&stableMidi!==lastJudged){
-          lastJudged=stableMidi;
-          const ring=lastHitPc!==null&&pc(stableMidi)===lastHitPc&&!onsetFlag;
-          if(!ring&&!matches(ev)){ev.wrong++;flash('bad');}
-        }else if(stableMidi===null)lastJudged=null;
+        else if(stableMidi!==null&&!ev.wrong&&isWrong(ev)){
+          // Fehlgriff erst zählen, wenn der falsche Ton neu angeschlagen wurde und 300 ms stabil bleibt
+          if(!wrongCand||wrongCand.m!==stableMidi)wrongCand={m:stableMidi,t:now};
+          else if(now-wrongCand.t>300){ev.wrong=1;flash('bad');recent.unshift(stableMidi);recent.length=Math.min(recent.length,4);}
+        }else wrongCand=null;
       }
       const tg=events[idx]?events[idx].beat:(events.length?events[events.length-1].beat+1:0);
       scrollBeat+=(tg-scrollBeat)*.12;
@@ -589,7 +599,7 @@ function evaluate(){
     if(mode==='wait'){
       const clean=events.filter(e=>e.state==='hit'&&!e.wrong).length;acc=clean/n;
       const r=events.filter(e=>e.rt).map(e=>e.rt).sort((a,b)=>a-b),med=r.length?r[r.length>>1]:9;
-      det='Reaktionszeit im Schnitt '+med.toFixed(1)+' s · '+events.reduce((a,e)=>a+e.wrong,0)+' Fehlgriffe';
+      const wr=events.filter(e=>e.wrong).length;det='Reaktionszeit im Schnitt '+med.toFixed(1)+' s · '+(wr?wr+' Ton'+(wr>1?'e':'')+' mit Fehlgriff':'keine Fehlgriffe');
       if(acc>=.85&&med<1.6){prof.phase='tempo';prof.bpm=L.bpm[0];prof.bad=0;tag='up';msg='Sitzt! Jetzt geht es im Tempo weiter: '+prof.bpm+' BPM.';}
       else if(acc<.5||med>4){prof.bad++;
         if(prof.bad>=2&&prof.level>0){prof.level--;prof.phase='learn';prof.bad=0;tag='down';msg='Wir gehen einen Schritt zurück: „'+LEVELS[prof.level].name+'“.';}
@@ -628,7 +638,7 @@ function finish(){
     const pct=events.length?Math.round(hits/events.length*100):0;
     $('#shRes').textContent=micOn?pct+' %':'✓';$('#shRes').style.color='var(--green)';
     $('#shMsg').textContent=micOn?hits+' von '+events.length+' Tönen getroffen':'Durchgang fertig';
-    $('#shDet').textContent=mode==='tempo'?bpm+' BPM':'';
+    const wr=events.filter(e=>e.wrong).length;$('#shDet').textContent=mode==='tempo'?bpm+' BPM':(micOn?(wr?wr+' Ton'+(wr>1?'e':'')+' mit Fehlgriff':'keine Fehlgriffe'):'');
     add('Nochmal',()=>{reset();start();},true);
     if(mode==='tempo')add('+5 BPM',()=>{setBpm(bpm+5);reset();start();});
   }
