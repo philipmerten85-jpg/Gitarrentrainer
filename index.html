@@ -122,7 +122,7 @@ textarea{width:100%;min-height:160px;background:#151210;border:1px solid var(--l
 #spark{width:100%;height:70px;display:block}
 
 /* Stimmgerät */
-#vTuner{align-items:center;justify-content:center;text-align:center;padding:10px 14px}
+#vTuner{align-items:center;text-align:center;padding:16px 14px 24px}
 .tbig{font-family:var(--mono);font-size:96px;font-weight:700;line-height:1}
 #tArc{width:min(92vw,420px);height:auto;margin:10px 0}
 .strs{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;justify-content:center}
@@ -233,6 +233,16 @@ E|-----------------------------|</textarea>
     </svg>
     <div class="pos" id="tHint">Tippe eine Saite für den Referenzton</div>
     <div class="strs" id="tStrs"></div>
+    <div class="card" style="margin-top:18px;width:min(100%,460px);text-align:left">
+      <div style="font-size:14px;font-weight:500">Mit deinem Stimmgerät abgleichen</div>
+      <div class="pos" id="calInfo" style="margin:4px 0 8px"></div>
+      <div style="font-size:13px;color:var(--mute);line-height:1.45">Stimm eine Saite mit deinem elektronischen Stimmgerät exakt. Dann hier tippen, die Saite kräftig anschlagen und 3 Sekunden klingen lassen. Die App übernimmt die Abweichung als Korrektur.</div>
+      <div class="chips" style="justify-content:flex-start;margin-top:10px">
+        <button class="chip pri" id="calBtn">Abgleichen</button>
+        <button class="chip" id="calReset">Korrektur löschen</button>
+        <button class="chip" id="a4m">A4 −</button><button class="chip" id="a4p">A4 +</button>
+      </div>
+    </div>
   </section>
 
   <!-- Fortschritt & Einstellungen -->
@@ -262,7 +272,7 @@ E|-----------------------------|</textarea>
       <label class="set"><div>Notennamen über den Tabs</div><span class="sw"><input type="checkbox" id="names" checked><span></span></span></label>
       <label class="set"><div>Metronom im Tempo-Modus</div><span class="sw"><input type="checkbox" id="metro" checked><span></span></span></label>
       <label class="set"><div>Ton automatisch vorspielen<small>Vor jedem Ton im Warten-Modus</small></div><span class="sw"><input type="checkbox" id="autoPlay"><span></span></span></label>
-      <div class="set"><div>Mikrofon-Empfindlichkeit<small>Weiter links = reagiert auf leisere Töne</small></div><input type="range" id="sens" min="1" max="40" value="10" style="max-width:140px"></div>
+      <div class="set"><div>Mikrofon-Empfindlichkeit<small>Passt sich automatisch an den Raum an. Weiter links = reagiert auf noch leisere Töne</small></div><input type="range" id="sens" min="12" max="40" value="15" style="max-width:140px"></div>
       <div class="set"><div>Zoom der Tabs</div><input type="range" id="zoom" min="50" max="180" value="90" style="max-width:140px"></div>
     </div>
     <div class="card" style="font-size:13px;color:var(--mute);line-height:1.5">
@@ -402,7 +412,7 @@ function click(acc){
   o.connect(g).connect(ac.destination);o.start();o.stop(ac.currentTime+.06);}
 function pluck(midi){
   try{ensureAC();}catch(e){return}
-  const f=440*Math.pow(2,(midi-69)/12),sr=ac.sampleRate,len=Math.floor(sr*1.5);
+  const f=cal.a4*Math.pow(2,(midi-69)/12),sr=ac.sampleRate,len=Math.floor(sr*1.5);
   const b=ac.createBuffer(1,len,sr),d=b.getChannelData(0),N=Math.max(2,Math.round(sr/f)),ring=new Float32Array(N);
   for(let i=0;i<N;i++)ring[i]=Math.random()*2-1;
   let p=0;for(let i=0;i<len;i++){const nx=(p+1)%N,v=ring[p];ring[p]=.4985*(ring[p]+ring[nx]);d[i]=v*.6;p=nx;}
@@ -414,10 +424,17 @@ async function toggleMic(){
     try{if(navigator.audioSession)navigator.audioSession.type='play-and-record';}catch(e){}
     ensureAC();
     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('nomedia');
-    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
-    ensureAC();
-    const s=ac.createMediaStreamSource(stream);analyser=ac.createAnalyser();analyser.fftSize=2048;buf=new Float32Array(2048);
-    s.connect(analyser);micOn=true;$('#banner').style.display='none';
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1}});
+    // AudioContext mit derselben Abtastrate wie das Mikro neu anlegen – sonst kann iOS die Tonhöhe verfälschen
+    const tr=stream.getAudioTracks()[0],ts=tr&&tr.getSettings?tr.getSettings():{};
+    const AC=window.AudioContext||window.webkitAudioContext;
+    try{if(ac)ac.close();}catch(e){}
+    try{ac=ts.sampleRate?new AC({sampleRate:ts.sampleRate}):new AC();}catch(e){ac=new AC();}
+    try{ac.resume();}catch(e){}
+    const s=ac.createMediaStreamSource(stream);analyser=ac.createAnalyser();analyser.fftSize=4096;buf=new Float32Array(4096);
+    const mute=ac.createGain();mute.gain.value=0;
+    s.connect(analyser);analyser.connect(mute).connect(ac.destination);
+    D=ac.sampleRate>30000?2:1;ds=new Float32Array(4096/D);floorRms=.003;micOn=true;$('#banner').style.display='none';
     if(src==='coach'&&!running)newCoachRound();
   }catch(e){
     micOn=false;const b=$('#banner');b.style.display='block';
@@ -435,35 +452,53 @@ async function keepAwake(on){
 
 // ---------- Tonhöhe (McLeod) ----------
 function detectPitch(x,sr){
-  const N=x.length,maxLag=Math.min(N>>1,Math.ceil(sr/65)),minLag=Math.floor(sr/1500),ns=new Float32Array(maxLag+2);
+  const N=x.length,maxLag=Math.min(N>>1,Math.ceil(sr/62)),minLag=Math.floor(sr/1500),ns=new Float32Array(maxLag+2);
   for(let t=0;t<=maxLag+1;t++){let a=0,m=0;for(let j=0,L=N-t;j<L;j++){const p=x[j],q=x[j+t];a+=p*q;m+=p*p+q*q;}ns[t]=m>0?2*a/m:0;}
   let t=1;while(t<maxLag&&ns[t]>0)t++;
   const pk=[];let cm=-1,cp=-1;
   for(;t<=maxLag;t++){if(ns[t]>0){if(ns[t]>cm){cm=ns[t];cp=t;}}else if(cp>0){pk.push(cp);cm=-1;cp=-1;}}
   if(cp>0)pk.push(cp);if(!pk.length)return null;
-  let g=0;for(const p of pk)g=Math.max(g,ns[p]);if(g<.6)return null;
+  let g=0;for(const p of pk)g=Math.max(g,ns[p]);if(g<.45)return null;
   const p=pk.find(p=>ns[p]>=.86*g&&p>=minLag);if(!p)return null;
   const a=ns[p-1],b=ns[p],c=ns[p+1],den=a-2*b+c,sh=den?.5*(a-c)/den:0;
   return {f:sr/(p+sh),clarity:b};}
 
 let hist=[],stableMidi=null,cents=0,rms=0,rmsSlow=0,onsetFlag=true,lastHitTime=0,lastHitPc=null,lastOnsetBeat=-99,silent=0,lastJudged=null,freq=0;
-const thr=()=>+$('#sens').value/1000*.9+.002;
+let D=2,ds=new Float32Array(2048),floorRms=.003,lastOnsetT=0,tunBuf=[],calRun=null;
+const cal=store.get('gt-cal',{a4:440,off:0});
+// Schwelle passt sich automatisch dem Grundrauschen im Raum an; der Regler ist nur noch der Abstand dazu
+const thr=()=>Math.max(.0006,Math.min(.02,floorRms*(+$('#sens').value/10)));
 function listen(){
   if(!micOn||!analyser){stableMidi=null;return;}
+  if(ac.state!=='running'){stableMidi=null;rms=0;return;}
   analyser.getFloatTimeDomainData(buf);
   let s=0;for(let i=0;i<buf.length;i++)s+=buf[i]*buf[i];rms=Math.sqrt(s/buf.length);
   const th=thr(),now=performance.now();
-  if(rms<th){silent++;if(silent>2)onsetFlag=true;}
-  else{if(rmsSlow>0&&rms>rmsSlow*1.7&&now-lastHitTime>140){onsetFlag=true;lastOnsetBeat=curBeat();}
-       if(silent>2)lastOnsetBeat=curBeat();silent=0;}
+  if(rms<th){floorRms=Math.max(.0002,floorRms*.97+rms*.03);silent++;if(silent>2)onsetFlag=true;}
+  else{floorRms=Math.min(floorRms*1.0008,.02);
+       if(rmsSlow>0&&rms>rmsSlow*1.5&&now-lastHitTime>140){onsetFlag=true;lastOnsetBeat=curBeat();lastOnsetT=now;}
+       if(silent>2){lastOnsetBeat=curBeat();lastOnsetT=now;}silent=0;}
   rmsSlow=rmsSlow*.85+rms*.15;
-  if(rms<th){hist=[];stableMidi=null;return;}
-  const r=detectPitch(buf,ac.sampleRate);
-  if(!r||r.f<70||r.f>1400)hist.push(null);
-  else{const mf=69+12*Math.log2(r.f/440),m=Math.round(mf);cents=Math.round((mf-m)*100);freq=r.f;hist.push(m);}
+  if(rms<th){hist=[];stableMidi=null;tunBuf=[];return;}
+  for(let i=0,k=0;k<ds.length;k++,i+=D){let v=0;for(let j=0;j<D;j++)v+=buf[i+j];ds[k]=v/D;}
+  const r=detectPitch(ds,ac.sampleRate/D);
+  let mf=null;
+  if(!r||r.f<62||r.f>1400)hist.push(null);
+  else{mf=69+12*Math.log2(r.f/cal.a4)-cal.off/100;const m=Math.round(mf);cents=Math.round((mf-m)*100);freq=r.f;hist.push(m);}
   if(hist.length>4)hist.shift();
-  const L=hist.slice(-3);
-  stableMidi=(L.length===3&&L[0]!==null&&L.every(v=>v===L[0]))?L[0]:(stableMidi!==null&&hist[hist.length-1]===stableMidi?stableMidi:null);}
+  // 2 von 3 Messungen müssen übereinstimmen
+  const L=hist.slice(-3),cnt={};let best=null;
+  for(const v of L)if(v!==null){cnt[v]=(cnt[v]||0)+1;if(cnt[v]>=2)best=v;}
+  const prev=stableMidi;
+  stableMidi=best!==null?best:(stableMidi!==null&&hist[hist.length-1]===stableMidi?stableMidi:null);
+  if(stableMidi!==prev)tunBuf=[];
+  // Stimmgerät: Anschlag (erste 150 ms, Ton noch zu hoch) ignorieren, dann Median bilden
+  if(mf!==null&&stableMidi!==null&&Math.round(mf)===stableMidi&&now-lastOnsetT>150){
+    tunBuf.push(mf-stableMidi);if(tunBuf.length>15)tunBuf.shift();
+    if(calRun)calRun.v.push(mf-Math.round(mf));
+  }
+  if(tunBuf.length>=3){const t=[...tunBuf].sort((a,b)=>a-b);cents=Math.round(t[t.length>>1]*100);}
+}
 const matches=ev=>stableMidi!==null&&($('#octTol').checked?pc(stableMidi)===pc(ev.midi):stableMidi===ev.midi);
 
 // ---------- Ablauf ----------
@@ -687,7 +722,7 @@ const tStrs=$('#tStrs');
 function drawTuner(){
   const n=$('#tNeedle');
   if(!micOn){$('#tNote').textContent='–';$('#tHz').textContent='Mikrofon einschalten';n.setAttribute('x2',150);n.setAttribute('y2',40);return;}
-  if(stableMidi===null){$('#tNote').style.color='var(--mute)';$('#tHz').textContent='Zupf eine Saite';return;}
+  if(stableMidi===null){$('#tNote').style.color='var(--mute)';$('#tHz').textContent=rms<thr()?'Zupf eine Saite · Pegel '+Math.round(rms/thr()*100)+' %':'höre … ';return;}
   const a=(cents/50)*60*Math.PI/180;n.setAttribute('x2',150+110*Math.sin(a));n.setAttribute('y2',150-110*Math.cos(a));
   const ok=Math.abs(cents)<6;n.setAttribute('stroke',ok?'#5fd38d':Math.abs(cents)<20?'#f2a541':'#ef6461');
   $('#tNote').textContent=noteName(stableMidi);$('#tNote').style.color=ok?'var(--green)':'var(--text)';
@@ -695,6 +730,20 @@ function drawTuner(){
   const near=STR_MIDI.reduce((a,m)=>Math.abs(m-stableMidi)<Math.abs(a-stableMidi)?m:a,STR_MIDI[0]);
   tStrs.querySelectorAll('button').forEach(b=>b.classList.toggle('hit',+b.dataset.m===near&&near===stableMidi));
   $('#tHint').textContent=Math.abs(near-stableMidi)<=2&&near!==stableMidi?'Ziel: '+noteName(near)+' – '+(stableMidi<near?'höher drehen ↑':'tiefer drehen ↓'):(ok?'Perfekt gestimmt ✓':(cents<0?'etwas höher ↑':'etwas tiefer ↓'));}
+
+function updCal(){$('#calInfo').textContent='Kammerton A4 = '+cal.a4+' Hz · Korrektur '+(cal.off?(cal.off>0?'+':'')+cal.off.toFixed(1)+' Cent':'keine');}
+$('#calBtn').onclick=()=>{
+  const b=$('#calBtn');
+  if(!micOn){b.textContent='Erst Mikro an';setTimeout(()=>b.textContent='Abgleichen',1800);return;}
+  if(calRun)return;calRun={v:[]};b.textContent='Ich höre zu …';
+  setTimeout(()=>{const v=calRun.v.sort((a,b)=>a-b);calRun=null;
+    if(v.length<15){b.textContent='Zu leise – nochmal';setTimeout(()=>b.textContent='Abgleichen',2200);return;}
+    const med=v[v.length>>1]*100;cal.off=Math.round((cal.off+med)*10)/10;store.set('gt-cal',cal);updCal();
+    b.textContent='✓ Abgeglichen';setTimeout(()=>b.textContent='Abgleichen',2200);},3000);};
+$('#calReset').onclick=()=>{cal.off=0;store.set('gt-cal',cal);updCal();};
+$('#a4m').onclick=()=>{cal.a4=Math.max(430,cal.a4-1);store.set('gt-cal',cal);updCal();};
+$('#a4p').onclick=()=>{cal.a4=Math.min(450,cal.a4+1);store.set('gt-cal',cal);updCal();};
+updCal();
 
 // Fortschritt
 function renderMe(){
@@ -752,7 +801,8 @@ document.addEventListener('keydown',e=>{
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(running&&!paused)start();save();}else if(wake===null&&running&&!paused)keepAwake(true);});
 window.addEventListener('resize',()=>{drawFret();if(view==='me')renderMe();});
 // iOS: AudioContext beim ersten Antippen freischalten
-document.addEventListener('touchend',function u(){try{ensureAC();const b=ac.createBuffer(1,1,22050),s=ac.createBufferSource();s.buffer=b;s.connect(ac.destination);s.start();}catch(e){}document.removeEventListener('touchend',u);},{passive:true});
+let unlocked=false;
+['touchend','click'].forEach(ev=>document.addEventListener(ev,()=>{try{ensureAC();if(!unlocked){unlocked=true;const b=ac.createBuffer(1,1,22050),s=ac.createBufferSource();s.buffer=b;s.connect(ac.destination);s.start();}}catch(e){}},{passive:true}));
 
 newCoachRound();
 requestAnimationFrame(tick);
