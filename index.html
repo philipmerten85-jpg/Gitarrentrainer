@@ -141,6 +141,12 @@ textarea{width:100%;min-height:160px;background:#151210;border:1px solid var(--l
 .mbox h3{margin:0 0 4px;font-size:17px}
 .item .x{margin-left:auto;color:var(--mute);background:none;border:0;font-size:16px;padding:6px 4px 6px 10px}
 .item .x.c{color:var(--red);font-size:12px}
+.mast{display:flex;align-items:center;gap:8px;margin-top:7px}
+.mast .bar{height:7px}
+.mast b{font-family:var(--mono);font-size:13px;min-width:40px;text-align:right}
+.tip{background:linear-gradient(135deg,#2a2016,#1f1a16);border:1px solid #6b4a1e;border-radius:16px;padding:14px 16px;margin-bottom:10px}
+.tip b{display:block;font-size:15px;margin-bottom:2px}
+.tip small{color:var(--mute);font-size:12px}
 #err{color:var(--red);font-size:13px;margin:6px 0}
 #spark{width:100%;height:70px;display:block}
 
@@ -243,14 +249,6 @@ nav button.on{color:var(--amber)}
 
   <!-- Übungen -->
   <section class="view" id="vLib"><div class="pad">
-    <div class="sec">Songs</div>
-    <div class="card">
-      <button class="btn pri" id="songImp" style="width:100%">＋ Songs importieren</button>
-      <input type="file" id="songFile" multiple style="display:none">
-      <div style="font-size:12px;color:var(--mute);margin-top:8px;line-height:1.45">Mehrere Dateien auf einmal auswählen – auch direkt aus Google Drive oder iCloud. Guitar Pro (.gp, .gpx, .gp5, .gp4, .gp3) oder MusicXML. Die passende Gitarrenspur wird automatisch gewählt. Songs bleiben nur auf diesem Gerät.</div>
-      <div id="songErr" style="color:var(--red);font-size:13px;margin-top:6px"></div>
-    </div>
-    <div id="songList"></div>
     <div class="sec">Übungen</div>
     <div class="cats" id="catBar"></div>
     <div id="libList"></div>
@@ -266,6 +264,20 @@ E|-----------------------------|</textarea>
       <div id="err"></div>
       <button class="btn pri" id="loadTab" style="width:100%">Tabs laden &amp; spielen</button>
     </div>
+  </div></section>
+
+  <!-- Songs -->
+  <section class="view" id="vSongs"><div class="pad">
+    <div class="sec">Meine Songs</div>
+    <div id="songTip"></div>
+    <div class="card">
+      <button class="btn pri" id="songImp" style="width:100%">＋ Songs importieren</button>
+      <input type="file" id="songFile" multiple style="display:none">
+      <div id="songDesc" style="font-size:12px;color:var(--mute);margin-top:8px;line-height:1.45">Mehrere Dateien auf einmal auswählen – auch direkt aus Google Drive oder iCloud. Guitar Pro (.gp, .gpx, .gp5, .gp4, .gp3) oder MusicXML. Die passende Gitarrenspur wird automatisch gewählt. Songs bleiben nur auf diesem Gerät.</div>
+      <div id="songErr" style="color:var(--red);font-size:13px;margin-top:6px"></div>
+    </div>
+    <div id="songList"></div>
+    <div id="songEmpty" style="font-size:14px;color:var(--mute);line-height:1.5;padding:4px 2px"></div>
   </div></section>
 
   <!-- Stimmgerät -->
@@ -337,6 +349,7 @@ E|-----------------------------|</textarea>
 
 <nav id="nav">
   <button data-v="coach" class="on"><svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.4 6.8 19.1l1-5.8L3.5 9.2l5.9-.9z"/></svg><span>Coach</span></button>
+  <button data-v="songs"><svg viewBox="0 0 24 24"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg><span>Songs</span></button>
   <button data-v="lib"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 10h16M4 14h16M4 18h16"/><circle cx="9" cy="10" r="1.6" fill="currentColor"/><circle cx="15" cy="14" r="1.6" fill="currentColor"/></svg><span>Übungen</span></button>
   <button data-v="tuner"><svg viewBox="0 0 24 24"><path d="M4 17a8 8 0 0 1 16 0"/><path d="M12 17l4-6"/></svg><span>Stimmen</span></button>
   <button data-v="me"><svg viewBox="0 0 24 24"><path d="M5 20V11M12 20V5M19 20v-6"/></svg><span>Fortschritt</span></button>
@@ -886,6 +899,7 @@ function selfRate(r){
   save();newCoachRound();start();}
 function finish(){
   if(src==='song'&&ytActive())try{yt.pauseVideo();}catch(e){}
+  const sr=src==='song'?recordSongRun():null;
   if(src==='song'&&$('#songLoop').checked){reset();start();return;}
   finished=true;running=false;keepAwake(false);$('#startBtn').textContent='▶ Weiter';
   const btns=$('#shBtns');btns.innerHTML='';
@@ -904,6 +918,15 @@ function finish(){
     const wr=events.filter(e=>e.wrong).length;$('#shDet').textContent=mode==='tempo'?bpm+' BPM':(micOn?(wr?wr+' Ton'+(wr>1?'e':'')+' mit Fehlgriff':'keine Fehlgriffe'):'');
     add('Nochmal',()=>{reset();start();},true);
     if(mode==='tempo'&&src!=='song')add('+5 BPM',()=>{setBpm(bpm+5);reset();start();});
+    if(src==='song'){
+      const ms=songMastery(song);
+      $('#shMsg').textContent=(sr?'Song beherrscht: '+ms.pct+' %'+(sr.after>sr.before?' (+'+(sr.after-sr.before)+')':''):'Song beherrscht: '+ms.pct+' %')+(micOn?' · '+hits+'/'+events.length+' Töne':'');
+      $('#shDet').textContent=ms.done+' von '+ms.total+' Takten sicher'+(mode==='wait'?' · Warten zählt 40 % – für mehr in Tempo spielen':songSpeed<1?' · bei '+Math.round(songSpeed*100)+' % Tempo':'');
+      const sp=weakSpot(song);
+      if(sp)add('🎯 Takt '+(sp.from+1)+'–'+(sp.to+1)+' üben',()=>{practiceSpot(song,sp);start();});
+      if(songSpeed<1&&mode==='tempo'&&sr&&events.length&&hits/events.length>=.9)add('Schneller ('+Math.round(Math.min(1,songSpeed+.25)*100)+' %)',()=>{$('#spd').value=String(Math.min(1,songSpeed+.25));applySong();start();});
+      if(songFrom>0||songTo<song.bars.length-1)add('Ganzer Song',()=>{$('#barFrom').value=1;$('#barTo').value=song.bars.length;$('#songLoop').checked=false;applySong();start();});
+    }
   }
   $('#sheet').classList.add('on');updHud();renderMe();}
 
@@ -925,7 +948,7 @@ function updHud(){
   const ht=$('#hudTitle');
   if(src==='coach'){const L=LEVELS[prof.level];ht.textContent='Level '+(prof.level+1)+' · '+(mode==='wait'?'Lernen':bpm+' BPM');ht.title=L.name;}
   else ht.innerHTML='<button class="back" id="backLib">‹ '+(curFree?curFree.name:'Übungen')+'</button>';
-  const bl=$('#backLib');if(bl)bl.onclick=()=>show('lib');
+  const bl=$('#backLib');if(bl)bl.onclick=()=>show(src==='song'?'songs':'lib');
   $('#freeCtl').classList.toggle('on',src==='free');
   $('#songCtl').classList.toggle('on',src==='song');
   const seg=$('#modeSeg'),slot=src==='song'?$('#songRow'):$('#freeCtl');if(seg.parentNode!==slot)slot.prepend(seg);
@@ -953,7 +976,7 @@ function draw(){
   const b0=Math.floor(scrollBeat-px/ppb)-1,b1=Math.ceil(scrollBeat+(W-px)/ppb)+1;
   if(src==='song'&&song){for(let i=0;i<song.bars.length;i++){const bb=song.bars[i];if(bb<b0||bb>b1)continue;const x=X(bb);
       cx.strokeStyle='rgba(239,230,220,.3)';cx.lineWidth=1.5;cx.beginPath();cx.moveTo(x,top-6);cx.lineTo(x,bot+6);cx.stroke();
-      cx.fillStyle='rgba(163,150,138,.6)';cx.font='10px JetBrains Mono';cx.fillText(i+1,x+4,H-6);}}
+      {const mv=(mArr(song)[i]||0);cx.fillStyle=mv>=.9?'#3ddc84':mv>=.5?'#f2a541':mv>0?'#ff5a5a':'rgba(188,176,164,.7)';cx.font='700 11px JetBrains Mono';cx.fillText(i+1,x+4,H-6);}}}
   else for(let b=Math.max(0,b0);b<=b1;b++){const x=X(b);cx.strokeStyle=b%4===0?'rgba(239,230,220,.18)':'rgba(239,230,220,.05)';cx.lineWidth=b%4===0?1.5:1;cx.beginPath();cx.moveTo(x,top-6);cx.lineTo(x,bot+6);cx.stroke();
     if(b%4===0){cx.fillStyle='rgba(163,150,138,.5)';cx.font='10px JetBrains Mono';cx.fillText(b/4+1,x+4,H-6);}}
   for(let s=0;s<6;s++){cx.strokeStyle='rgba(238,228,216,'+(.5+s*.07)+')';cx.lineWidth=1.3+s*.45;cx.beginPath();cx.moveTo(0,Y(s));cx.lineTo(W,Y(s));cx.stroke();}
@@ -1118,7 +1141,7 @@ $('#songFile').onchange=async e=>{
         const sg=makeSong(score,t.i,file.name,id);
         // gleicher Song schon vorhanden? → ersetzen (Video-Abgleich behalten)
         const old=songs.find(q=>q.title===sg.title&&q.artist===sg.artist);
-        if(old){sg.yt=old.yt;songs=songs.filter(q=>q!==old);idb.del(old.id);}
+        if(old){sg.yt=old.yt;if(old.ti===sg.ti){sg.mt=old.mt;sg.last=old.last;}songs=songs.filter(q=>q!==old);idb.del(old.id);}
         songs.unshift(sg);
         if(!saveSongs()){songs.shift();throw new Error('Speicher voll');}
         await idb.put(id,{name:file.name,buf});
@@ -1130,12 +1153,42 @@ $('#songFile').onchange=async e=>{
   if(fails.length)err.textContent='Nicht importiert: '+fails.join(', ');
   if(okN===1&&first)openSong(first.id);
   else if(okN>1)$('#songErr').insertAdjacentHTML('afterbegin','<span style="color:var(--green)">✓ '+okN+' Songs importiert. </span>');};
+// ---------- Wie gut kann ich den Song? ----------
+// Pro Takt zählt der beste Durchgang: Trefferquote (95 % reichen für voll) × Tempo (100 % / 75 % / 50 %); Warten-Modus zählt 40 %.
+const mArr=sg=>{const mt=sg.mt||(sg.mt={});return mt[sg.ti??0]||(mt[sg.ti??0]=[]);};
+function songMastery(sg){const m=(sg.mt||{})[sg.ti??0]||[],bars=[...new Set(sg.events.map(e=>e.bar))];
+  if(!bars.length)return {pct:0,done:0,total:0};let sum=0,done=0;for(const b of bars){const v=m[b]||0;sum+=v;if(v>=.9)done++;}
+  return {pct:Math.round(sum/bars.length*100),done,total:bars.length};}
+function recordSongRun(){
+  if(!micOn||!song)return null;
+  const w=mode==='tempo'?songSpeed:.4,before=songMastery(song).pct,m=mArr(song),by={};
+  for(const e of events){if(e.state==='pending')continue;const o=by[e.bar]||(by[e.bar]={n:0,ok:0});o.n++;if(e.state==='hit'&&!e.wrong)o.ok++;}
+  let any=false;for(const b in by){const sc=+(Math.min(1,by[b].ok/by[b].n/.95)*w).toFixed(3);any=true;if(sc>(m[b]||0))m[b]=sc;}
+  if(!any)return null;song.last=Date.now();saveSongs();return {before,after:songMastery(song).pct};}
+// Schwächste Stelle: 4 Takte am Stück mit dem niedrigsten Stand
+function weakSpot(sg){const m=(sg.mt||{})[sg.ti??0]||[],has=[...new Set(sg.events.map(e=>e.bar))].sort((a,b)=>a-b);if(!has.length)return null;
+  const n=Math.min(4,has.length);let best=null,bv=9;
+  for(let i=0;i+n<=has.length;i++){const w=has.slice(i,i+n),v=w.reduce((x,b)=>x+(m[b]||0),0)/n;if(v<bv-1e-9){bv=v;best=[w[0],w[n-1]];}}
+  return best&&bv<.9?{from:best[0],to:best[1],v:bv,spd:bv<.3?.5:bv<.7?.75:1}:null;}
+function practiceSpot(sg,sp){openSong(sg.id);$('#barFrom').value=sp.from+1;$('#barTo').value=sp.to+1;$('#spd').value=String(sp.spd);$('#songLoop').checked=true;
+  setMode('tempo');applySong();}
 function renderSongs(){
   const l=$('#songList');l.innerHTML='';
+  $('#songDesc').style.display=songs.length?'none':'';
+  $('#songEmpty').textContent=songs.length?'':'Noch keine Songs. Tippe oben auf „Songs importieren“ und wähle eine oder mehrere Guitar-Pro-Dateien aus.';
+  // Vorschlag: zuletzt gespielter Song, schwächste Stelle
+  const tip=$('#songTip');tip.innerHTML='';
+  const last=songs.filter(q=>q.last).sort((a,b)=>b.last-a.last)[0];
+  if(last){const sp=weakSpot(last),ms=songMastery(last),d=document.createElement('button');d.className='tip';d.style.cssText='width:100%;text-align:left;color:inherit;font:inherit';
+    d.innerHTML='<small>WEITERÜBEN · '+ms.pct+' % beherrscht</small><b></b><small></small>';
+    d.querySelector('b').textContent=last.title;
+    d.querySelectorAll('small')[1].textContent=sp?'🎯 Takt '+(sp.from+1)+'–'+(sp.to+1)+' in Schleife bei '+Math.round(sp.spd*100)+' % – deine schwierigste Stelle':'Alles sitzt – spiel den ganzen Song im Originaltempo.';
+    d.onclick=()=>{if(sp)practiceSpot(last,sp);else{openSong(last.id);$('#spd').value='1';setMode('tempo');applySong();}};tip.appendChild(d);}
   songs.forEach(sg=>{const b=document.createElement('div');b.className='item';b.style.cursor='pointer';
-    b.innerHTML='<span class="ic">🎵</span><span style="min-width:0"><b></b><small></small></span><button class="x" aria-label="Löschen">✕</button>';
+    const ms=songMastery(sg),col=ms.pct>=90?'var(--green)':ms.pct>=50?'var(--amber)':ms.pct>0?'var(--red)':'var(--line)';
+    b.innerHTML='<span class="ic">🎵</span><span style="min-width:0;flex:1"><b></b><small></small><div class="mast"><div class="bar"><i style="width:'+ms.pct+'%;background:'+col+'"></i></div><b>'+ms.pct+' %</b></div></span><button class="x" aria-label="Löschen">✕</button>';
     b.querySelector('b').textContent=sg.title+(sg.artist?' – '+sg.artist:'');
-    b.querySelector('small').textContent=sg.track+' · '+sg.bars.length+' Takte · '+sg.bpm+' BPM'+(sg.yt?' · ▶ Video':'')+(sg.tuningStd?'':' · Stimmung '+tuneName(sg.tuning));
+    b.querySelector('small').textContent=sg.track+' · '+ms.done+'/'+ms.total+' Takte sicher · '+sg.bpm+' BPM'+(sg.yt?' · ▶ Video':'')+(sg.tuningStd?'':' · Stimmung '+tuneName(sg.tuning));
     b.onclick=()=>openSong(sg.id);
     const x=b.querySelector('.x');x.onclick=ev=>{ev.stopPropagation();
       if(x.classList.contains('c')){songs=songs.filter(q=>q.id!==sg.id);saveSongs();idb.del(sg.id);renderSongs();}
@@ -1154,7 +1207,7 @@ function fillTracks(){const t=$('#trk');t.innerHTML='';const list=song.tracks||[
 $('#trk').onchange=async()=>{if(!song)return;const ti=+$('#trk').value,f=await idb.get(song.id);
   if(!f){$('#songHint').textContent='Für den Spurwechsel die Datei bitte einmal neu importieren.';fillTracks();return;}
   try{const at=await loadAT(),score=at.importer.ScoreLoader.loadScoreFromBytes(new Uint8Array(f.buf),new at.Settings());
-    const n=makeSong(score,ti,f.name,song.id);n.yt=song.yt;Object.assign(song,n);saveSongs();renderSongs();openSong(song.id);}
+    const n=makeSong(score,ti,f.name,song.id);n.yt=song.yt;n.mt=song.mt;n.last=song.last;Object.assign(song,n);saveSongs();renderSongs();openSong(song.id);}
   catch(x){$('#songHint').textContent='Spurwechsel fehlgeschlagen: '+x.message;}};
 function openSong(id){
   song=songs.find(q=>q.id===id);if(!song)return;fillTracks();
@@ -1198,9 +1251,10 @@ renderSongs();
 function show(v){
   if(running&&!paused&&v!=='play'&&v!=='coach')start();
   view=v;
-  const map={coach:'vPlay',play:'vPlay',lib:'vLib',tuner:'vTuner',me:'vMe'};
+  const map={coach:'vPlay',play:'vPlay',lib:'vLib',songs:'vSongs',tuner:'vTuner',me:'vMe'};
   document.querySelectorAll('.view').forEach(e=>e.classList.toggle('on',e.id===map[v]));
-  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v||(v==='play'&&b.dataset.v==='lib')));
+  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v||(v==='play'&&b.dataset.v===(src==='song'?'songs':'lib'))));
+  if(v==='songs')renderSongs();
   if(v==='coach'&&src!=='coach'){newCoachRound();}
   if(v==='me')renderMe();
   updHud();}
