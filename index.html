@@ -271,9 +271,14 @@ E|-----------------------------|</textarea>
     <div class="sec">Meine Songs</div>
     <div id="songTip"></div>
     <div class="card">
-      <button class="btn pri" id="songImp" style="width:100%">＋ Songs importieren</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn pri" id="driveBtn" style="flex:1.4">☁️ Aus Drive laden</button>
+        <button class="btn" id="songImp" style="flex:1">＋ Vom iPhone</button>
+      </div>
+      <button id="folderBtn" style="background:none;border:0;color:var(--amber);font-size:12px;padding:8px 0 0">📁 Drive-Ordner ändern</button>
+      <div class="yin" id="folderRow" style="display:none;margin-top:8px"><input id="folderUrl" placeholder="Link zum Drive-Ordner" autocapitalize="off" autocorrect="off"><button class="chip pri" id="folderOk">OK</button></div>
       <input type="file" id="songFile" multiple style="display:none">
-      <div id="songDesc" style="font-size:12px;color:var(--mute);margin-top:8px;line-height:1.45">Mehrere Dateien auf einmal auswählen – auch direkt aus Google Drive oder iCloud. Guitar Pro (.gp, .gpx, .gp5, .gp4, .gp3) oder MusicXML. Die passende Gitarrenspur wird automatisch gewählt. Songs bleiben nur auf diesem Gerät.</div>
+      <div id="songDesc" style="font-size:12px;color:var(--mute);margin-top:8px;line-height:1.45">„Aus Drive laden“ holt alle neuen Songs aus deinem Gitarren-Ordner in Google Drive. „Vom iPhone“ öffnet den Dateidialog. Guitar Pro (.gp, .gpx, .gp5, .gp4, .gp3) oder MusicXML. Die passende Gitarrenspur wird automatisch gewählt. Songs bleiben nur auf diesem Gerät.</div>
       <div id="songErr" style="color:var(--red);font-size:13px;margin-top:6px"></div>
     </div>
     <div id="songList"></div>
@@ -1125,34 +1130,83 @@ function makeSong(score,ti,name,id){
   const c=convertTrack(score,ti),tracks=songTracks(score);
   return {id,title:score.title||name.replace(/\.[^.]+$/,''),artist:score.artist||'',track:score.tracks[ti].name||'Spur '+(ti+1),ti,
     tracks:tracks.map(t=>({i:t.i,name:t.name,notes:t.notes})),bpm:c.bpm,bars:c.bars.map(x=>+x.toFixed(4)),events:c.events,tuning:c.tuning,tuningStd:c.tuningStd,yt:null};}
-$('#songFile').onchange=async e=>{
-  const files=[...(e.target.files||[])];if(!files.length)return;
-  const err=$('#songErr'),btn=$('#songImp'),fails=[];let first=null,okN=0;
+// Gemeinsamer Import für Dateien vom Gerät und aus Google Drive. items: [{name, getBuf, onOk}]
+async function importItems(items,btn,label){
+  const err=$('#songErr'),fails=[];let first=null,okN=0;err.textContent='';
   btn.textContent='Lade Import-Baustein …';
   try{
     const at=await loadAT();
-    for(let k=0;k<files.length;k++){
-      const file=files[k];btn.textContent='Importiere '+(k+1)+' von '+files.length+' …';
+    for(let k=0;k<items.length;k++){
+      const it=items[k];btn.textContent='Importiere '+(k+1)+' von '+items.length+' …';
       try{
-        const buf=await file.arrayBuffer();
+        const buf=await it.getBuf();
         let score;try{score=at.importer.ScoreLoader.loadScoreFromBytes(new Uint8Array(buf),new at.Settings());}catch(x){throw new Error('kein Guitar Pro/MusicXML');}
         const tr=songTracks(score);if(!tr.length)throw new Error('keine Gitarrenspur');
         const t=bestTrack(tr),id=Date.now()+k;
-        const sg=makeSong(score,t.i,file.name,id);
-        // gleicher Song schon vorhanden? → ersetzen (Video-Abgleich behalten)
+        const sg=makeSong(score,t.i,it.name,id);
+        // gleicher Song schon vorhanden? → ersetzen (Video-Abgleich und Fortschritt behalten)
         const old=songs.find(q=>q.title===sg.title&&q.artist===sg.artist);
         if(old){sg.yt=old.yt;if(old.ti===sg.ti){sg.mt=old.mt;sg.last=old.last;}songs=songs.filter(q=>q!==old);idb.del(old.id);}
         songs.unshift(sg);
         if(!saveSongs()){songs.shift();throw new Error('Speicher voll');}
-        await idb.put(id,{name:file.name,buf});
+        await idb.put(id,{name:it.name,buf});
+        if(it.onOk)it.onOk(sg);
         okN++;if(!first)first=sg;
-      }catch(x){fails.push(file.name+' ('+x.message+')');}
+      }catch(x){fails.push(it.name+' ('+x.message+')');}
     }
   }catch(x){err.textContent=x.message;}
-  btn.textContent='＋ Songs importieren';renderSongs();
+  btn.textContent=label;renderSongs();
   if(fails.length)err.textContent='Nicht importiert: '+fails.join(', ');
-  if(okN===1&&first)openSong(first.id);
-  else if(okN>1)$('#songErr').insertAdjacentHTML('afterbegin','<span style="color:var(--green)">✓ '+okN+' Songs importiert. </span>');};
+  if(okN)$('#songErr').insertAdjacentHTML('afterbegin','<span style="color:var(--green)">✓ '+okN+' Song'+(okN>1?'s':'')+' importiert. </span>');
+  return {okN,first};}
+$('#songFile').onchange=async e=>{
+  const files=[...(e.target.files||[])];if(!files.length)return;
+  const r=await importItems(files.map(f=>({name:f.name,getBuf:()=>f.arrayBuffer()})),$('#songImp'),'＋ Vom iPhone');
+  if(r.okN===1&&r.first)openSong(r.first.id);};
+
+// ---------- Google Drive: Ordner lesen und neue Songs automatisch holen ----------
+const GCLIENT='926115734308-ru2hdqtm2v89fl703sr08933oetb5c4t.apps.googleusercontent.com';
+const GSCOPE='https://www.googleapis.com/auth/drive.readonly';
+const SONGRX=/\.(gp|gpx|gp3|gp4|gp5|xml|musicxml|mxl)$/i;
+let gisP=null,tokenClient=null,gTok=store.get('gt-gtok',null);
+const driveFolder=()=>store.get('gt-folder','1QBKGP9GU-roWDTDkIGZdssqoiWJ0LYJZ');
+function folderId(u){u=String(u).trim();const m=u.match(/folders\/([\w-]{10,})/)||u.match(/[?&]id=([\w-]{10,})/);return m?m[1]:(/^[\w-]{10,}$/.test(u)?u:null);}
+function loadGIS(){return gisP||(gisP=new Promise((res,rej)=>{if(window.google&&google.accounts&&google.accounts.oauth2)return res();
+  const s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.async=true;s.onload=()=>res();s.onerror=()=>{gisP=null;rej(new Error('Google-Anmeldung nicht erreichbar'));};document.head.appendChild(s);}));}
+const tokOK=()=>gTok&&gTok.exp>Date.now()+60000;
+// muss direkt aus dem Tipp heraus aufgerufen werden (Popup)
+function getToken(){return new Promise((res,rej)=>{
+  if(tokOK())return res(gTok.t);
+  if(!window.google||!google.accounts||!google.accounts.oauth2)return rej(new Error('Google-Anmeldung lädt noch – bitte gleich nochmal tippen.'));
+  tokenClient=google.accounts.oauth2.initTokenClient({client_id:GCLIENT,scope:GSCOPE,
+    callback:r=>{if(r&&r.access_token){gTok={t:r.access_token,exp:Date.now()+(+r.expires_in||3600)*1000};store.set('gt-gtok',gTok);res(gTok.t);}else rej(new Error('Anmeldung abgebrochen'));},
+    error_callback:e=>rej(new Error(e&&e.type==='popup_closed'?'Anmeldefenster geschlossen':'Anmeldung fehlgeschlagen'))});
+  tokenClient.requestAccessToken({prompt:store.get('gt-gconsent',0)?'':'consent'});});}
+async function gfetch(url,t){const r=await fetch(url,{headers:{Authorization:'Bearer '+t}});
+  if(r.status===401){gTok=null;store.set('gt-gtok',null);throw new Error('Google-Anmeldung abgelaufen – bitte nochmal tippen.');}
+  if(r.status===404)throw new Error('Ordner nicht gefunden – stimmt der Ordner-Link?');
+  if(!r.ok)throw new Error('Google Drive antwortet mit Fehler '+r.status);return r;}
+async function driveList(t){
+  const q=encodeURIComponent("'"+driveFolder()+"' in parents and trashed=false");let files=[],page='';
+  do{const r=await gfetch('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=nextPageToken,files(id,name,modifiedTime,mimeType)&pageSize=200&supportsAllDrives=true&includeItemsFromAllDrives=true'+(page?'&pageToken='+page:''),t);
+    const j=await r.json();files=files.concat(j.files||[]);page=j.nextPageToken||'';}while(page);
+  return files.filter(f=>SONGRX.test(f.name));}
+async function driveSync(silent){
+  const btn=$('#driveBtn'),label='☁️ Aus Drive laden',err=$('#songErr');
+  try{
+    const t=await getToken();store.set('gt-gconsent',1);
+    btn.textContent='Prüfe Drive-Ordner …';
+    const files=await driveList(t),seen=store.get('gt-dseen',{});
+    const neu=files.filter(f=>seen[f.id]!==f.modifiedTime);
+    if(!neu.length){btn.textContent=label;if(!silent){err.innerHTML='<span style="color:var(--green)">✓ Alles aktuell – '+files.length+' Song'+(files.length===1?'':'s')+' im Drive-Ordner.</span>';}return;}
+    const r=await importItems(neu.map(f=>({name:f.name,getBuf:async()=>(await gfetch('https://www.googleapis.com/drive/v3/files/'+f.id+'?alt=media&supportsAllDrives=true',t)).arrayBuffer(),
+      onOk:()=>{seen[f.id]=f.modifiedTime;store.set('gt-dseen',seen);}})),btn,label);
+    if(r.okN===1&&r.first&&!silent)openSong(r.first.id);
+  }catch(x){btn.textContent=label;if(!silent)err.textContent=x.message;}}
+$('#driveBtn').onclick=()=>{$('#songErr').textContent='';driveSync(false);};
+$('#folderBtn').onclick=()=>{const r=$('#folderRow');r.style.display=r.style.display==='flex'?'none':'flex';$('#folderUrl').value='https://drive.google.com/drive/folders/'+driveFolder();};
+$('#folderOk').onclick=()=>{const id=folderId($('#folderUrl').value);if(!id){$('#songErr').textContent='Das ist kein gültiger Drive-Ordner-Link.';return;}
+  store.set('gt-folder',id);store.set('gt-dseen',{});$('#folderRow').style.display='none';$('#songErr').innerHTML='<span style="color:var(--green)">✓ Ordner gespeichert. Tippe auf „Aus Drive laden“.</span>';};
 // ---------- Wie gut kann ich den Song? ----------
 // Pro Takt zählt der beste Durchgang: Trefferquote (95 % reichen für voll) × Tempo (100 % / 75 % / 50 %); Warten-Modus zählt 40 %.
 const mArr=sg=>{const mt=sg.mt||(sg.mt={});return mt[sg.ti??0]||(mt[sg.ti??0]=[]);};
@@ -1175,7 +1229,7 @@ function practiceSpot(sg,sp){openSong(sg.id);$('#barFrom').value=sp.from+1;$('#b
 function renderSongs(){
   const l=$('#songList');l.innerHTML='';
   $('#songDesc').style.display=songs.length?'none':'';
-  $('#songEmpty').textContent=songs.length?'':'Noch keine Songs. Tippe oben auf „Songs importieren“ und wähle eine oder mehrere Guitar-Pro-Dateien aus.';
+  $('#songEmpty').textContent=songs.length?'':'Noch keine Songs. Lege Guitar-Pro-Dateien in deinen Drive-Ordner und tippe oben auf „Aus Drive laden“.';
   // Vorschlag: zuletzt gespielter Song, schwächste Stelle
   const tip=$('#songTip');tip.innerHTML='';
   const last=songs.filter(q=>q.last).sort((a,b)=>b.last-a.last)[0];
@@ -1254,7 +1308,7 @@ function show(v){
   const map={coach:'vPlay',play:'vPlay',lib:'vLib',songs:'vSongs',tuner:'vTuner',me:'vMe'};
   document.querySelectorAll('.view').forEach(e=>e.classList.toggle('on',e.id===map[v]));
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v||(v==='play'&&b.dataset.v===(src==='song'?'songs':'lib'))));
-  if(v==='songs')renderSongs();
+  if(v==='songs'){renderSongs();loadGIS().catch(()=>{});if(tokOK())driveSync(true);}
   if(v==='coach'&&src!=='coach'){newCoachRound();}
   if(v==='me')renderMe();
   updHud();}
