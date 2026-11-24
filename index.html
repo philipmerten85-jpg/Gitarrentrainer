@@ -337,6 +337,7 @@ E|-----------------------------|</textarea>
     <div class="card">
       <label class="set"><div>Oktave egal<small>Hilft bei Obertönen und dünnen Handy-Mikros</small></div><span class="sw"><input type="checkbox" id="octTol" checked><span></span></span></label>
       <label class="set"><div>Fingerfarben<small>Gelb = Zeige-, Lila = Mittel-, Blau = Ring-, Rot = kleiner Finger</small></div><span class="sw"><input type="checkbox" id="fing" checked><span></span></span></label>
+      <label class="set"><div>Einfache Erkennung (alt)<small>Nur einschalten, wenn die Anschlag-Erkennung bei dir schlechter klappt</small></div><span class="sw"><input type="checkbox" id="simpleDet"><span></span></span></label>
       <label class="set"><div>Notennamen über den Tabs</div><span class="sw"><input type="checkbox" id="names" checked><span></span></span></label>
       <label class="set"><div>Metronom im Tempo-Modus</div><span class="sw"><input type="checkbox" id="metro" checked><span></span></span></label>
       <label class="set"><div>Ton automatisch vorspielen<small>Vor jedem Ton im Warten-Modus</small></div><span class="sw"><input type="checkbox" id="autoPlay"><span></span></span></label>
@@ -693,7 +694,7 @@ async function toggleMic(){
     try{ac.resume();}catch(e){}
     const s=ac.createMediaStreamSource(stream);analyser=ac.createAnalyser();analyser.fftSize=4096;buf=new Float32Array(4096);
     const mute=ac.createGain();mute.gain.value=0;
-    s.connect(analyser);analyser.connect(mute).connect(ac.destination);
+    s.connect(analyser);analyser.connect(mute).connect(ac.destination);setupSpec(s,mute);
     D=ac.sampleRate>30000?2:1;ds=new Float32Array(4096/D);floorRms=.003;micOn=true;store.set('gt-mic',1);$('#banner').style.display='none';
     if(src==='coach'&&!running)newCoachRound();
   }catch(e){
@@ -736,9 +737,10 @@ function listen(){
   const th=thr(),now=performance.now();
   if(rms<th){floorRms=Math.max(.0002,floorRms*.97+rms*.03);silent++;if(silent>2)onsetFlag=true;}
   else{floorRms=Math.min(floorRms*1.0008,.02);
-       if(rmsSlow>0&&rms>rmsSlow*1.5&&now-lastHitTime>140){onsetFlag=true;lastOnsetBeat=curBeat();lastOnsetT=now;}
+       if(!useOnset()&&rmsSlow>0&&rms>rmsSlow*1.5&&now-lastHitTime>140){onsetFlag=true;lastOnsetBeat=curBeat();lastOnsetT=now;}
        if(silent>2){lastOnsetBeat=curBeat();lastOnsetT=now;}silent=0;}
   rmsSlow=rmsSlow*.85+rms*.15;
+  if(useOnset())specStep(now);
   if(rms<th){hist=[];rawF=[];stableMidi=null;tunBuf=[];return;}
   for(let i=0,k=0;k<ds.length;k++,i+=D){let v=0;for(let j=0;j<D;j++)v+=buf[i+j];ds[k]=v/D;}
   const r=detectPitch(ds,ac.sampleRate/D);
@@ -760,6 +762,45 @@ function listen(){
   }
   if(tunBuf.length>=3){const t=[...tunBuf].sort((a,b)=>a-b);cents=Math.round(t[t.length>>1]*100);}
 }
+// ---------- Anschlag-Erkennung (mehrstimmig) ----------
+// Statt „welcher Ton klingt gerade?“ wird gefragt: „welcher Ton ist bei diesem Anschlag NEU dazugekommen?“
+// Dazu wird das Spektrum kurz vor dem Anschlag vom Spektrum danach abgezogen – nachklingende Saiten fallen so heraus.
+let an2=null,spec=null,nb=0,binHz=1,lowBin=1,sring=[],fluxH=[],lastOn=-1e9,pend=null,onQ=[],onLog=[];
+function setupSpec(srcNode,sink){an2=ac.createAnalyser();an2.fftSize=8192;an2.smoothingTimeConstant=0;srcNode.connect(an2);an2.connect(sink);
+  binHz=ac.sampleRate/8192;nb=Math.min(an2.frequencyBinCount,Math.ceil(5200/binHz));lowBin=Math.floor(70/binHz);spec=new Float32Array(an2.frequencyBinCount);sring=[];fluxH=[];pend=null;onQ=[];}
+function pk(D,f){const lo=Math.max(1,Math.floor(f*.983/binHz)),hi=Math.min(nb-1,Math.ceil(f*1.017/binHz));let m=0;for(let i=lo;i<=hi;i++)if(D[i]>m)m=D[i];return m;}
+const HW=[1,.9,.8,.7,.6,.5,.45,.4];
+function noteScores(D){
+  const sc=[];let mx=0;
+  for(let m=38;m<=90;m++){const f=cal.a4*Math.pow(2,(m-69)/12);let s=0,odd=0,n=0;
+    for(let h=1;h<=8;h++){const fh=h*f*Math.sqrt(1+.00008*h*h);if(fh>5000)break;const v=pk(D,fh)*HW[h-1];s+=v;if(h%2)odd+=v;n++;}
+    if(odd<.3*s)s*=.5;            // nur gerade Obertöne → eher eine Oktave höher
+    sc.push({m,s});if(s>mx)mx=s;}
+  return {sc,mx};}
+function specStep(now){
+  if(!an2)return;
+  an2.getFloatFrequencyData(spec);
+  const cur=new Float32Array(nb);for(let i=0;i<nb;i++)cur[i]=Math.pow(10,(spec[i]>-160?spec[i]:-160)/20);
+  const ref=sring.length>=3?sring[sring.length-3]:null;let flux=0;
+  if(ref){for(let i=lowBin;i<nb;i++){const a=cur[i],b=ref.m[i];if(a>b)flux+=Math.sqrt(a)-Math.sqrt(b);}}
+  sring.push({m:cur,t:now});if(sring.length>14)sring.shift();
+  fluxH.push(flux);if(fluxH.length>60)fluxH.shift();
+  const srt=[...fluxH].sort((a,b)=>a-b),med=srt[srt.length>>1]||0;
+  const on=ref&&flux>med*2.5+thr()*.6&&rms>thr()*.7&&now-lastOn>110;
+  if(on){lastOn=now;lastOnsetT=now;lastOnsetBeat=curBeat();onsetFlag=true;
+    pend={t:now,beat:curBeat(),pre:sring[Math.max(0,sring.length-5)].m,n:0,acc:new Float32Array(nb)};}
+  if(pend){pend.n++;
+    // Zuwachs gegenüber vor dem Anschlag aufsummieren (Frames 3–9 ≈ 50–150 ms)
+    if(pend.n>=3)for(let i=0;i<nb;i++){const d=cur[i]-pend.pre[i];if(d>0)pend.acc[i]+=d;}
+    if(pend.n>=9){const {sc,mx}=noteScores(pend.acc);
+      const win=mx>0?sc.filter(x=>x.s>=.5*mx).sort((a,b)=>b.s-a.s).slice(0,4):[];
+      const r={t:pend.t,beat:pend.beat,notes:win.map(x=>x.m),top:win.length?win[0].m:null};
+      onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();pend=null;}}
+}
+// Passt ein Anschlag zum Zielton (oder einem Ton des Akkords)?
+function onsetMatches(r,ev){const tg=[ev,...(ev.alts||[])],oct=$('#octTol').checked;
+  return r.notes.some(m=>tg.some(t=>oct?pc(m)===pc(t.midi):Math.abs(m-t.midi)===0||Math.abs(m-t.midi)===12));}
+
 const matches=ev=>stableMidi!==null&&($('#octTol').checked?pc(stableMidi)===pc(ev.midi):stableMidi===ev.midi);
 // Großzügige Treffer-Prüfung: 2 von 4 Messungen genügen, kurz nach dem Anschlag auch 1 von 2; bis 60 Cent daneben zählt noch
 let rawF=[];
@@ -784,7 +825,7 @@ function setMode(m){mode=m;document.querySelectorAll('#modeSeg button').forEach(
 function reset(){
   events.forEach(e=>{e.state='pending';e.wrong=0;e.rt=0;});assignFingers(events);
   if(src!=='song')baseBeat=0;
-  idx=0;hits=0;misses=0;running=false;paused=false;finished=false;scrollBeat=Math.min(baseBeat,events.length?events[0].beat:0);lastClickBeat=-99;onsetFlag=true;lastHitPc=null;lastJudged=null;recent=[];wrongCand=null;
+  idx=0;hits=0;misses=0;running=false;paused=false;finished=false;scrollBeat=Math.min(baseBeat,events.length?events[0].beat:0);lastClickBeat=-99;onsetFlag=true;lastHitPc=null;lastJudged=null;recent=[];wrongCand=null;onQ=[];onLog=[];lastUsedOn=performance.now();stableSince=0;
   $('#sheet').classList.remove('on');$('#count').style.opacity=0;$('#startBtn').textContent='▶ Start';keepAwake(false);updHud();}
 function start(){
   ensureAC();
@@ -798,7 +839,8 @@ function start(){
   else{paused=false;if(ytActive())try{yt.playVideo();}catch(e){}const d=performance.now()-pauseAt;if(mode==='tempo')t0+=d;curStart+=d;$('#startBtn').textContent='⏸ Pause';updHud();}}
 function flash(k){const st=$('#stage');st.classList.add(k);clearTimeout(flash['t'+k]);flash['t'+k]=setTimeout(()=>st.classList.remove(k),220);}
 // Nachklingende Saiten, Obertöne (Oktave, Quinte darüber) und Anschlaggeräusche sind kein Fehlgriff
-let wrongCand=null,recent=[];
+let wrongCand=null,recent=[],lastUsedOn=0,stableSince=0;
+const useOnset=()=>!$('#simpleDet').checked;
 const related=(m,ref)=>m>=ref-1&&(pc(m)===pc(ref)||(m>ref+5&&pc(m)===pc(ref+7)));
 function isWrong(ev){
   const m=stableMidi,now=performance.now();
@@ -823,7 +865,18 @@ function tick(){
     addTime(dt);
     if(mode==='wait'){
       const ev=events[idx];
-      if(ev){
+      if(ev&&useOnset()){
+        let done=false;
+        while(onQ.length&&!done){const r=onQ.shift();if(r.t<=lastUsedOn)continue;
+          if(onsetMatches(r,ev)){lastUsedOn=r.t;hitCurrent(false);done=true;}
+          else if(r.top!==null&&!ev.wrong&&!ev.tech&&!related(r.top,ev.midi)&&pc(r.top)!==pc(ev.midi)){ev.wrong=1;flash('bad');}}
+        const ringing=recent.some(m=>pc(m)===pc(ev.midi));
+        if(!done&&ev.tech&&hitOK(ev)&&!ringing){lastUsedOn=lastOn;hitCurrent(false);done=true;}
+        // Sicherheitsnetz für sehr leise Anschläge: Ton klingt klar > 0,6 s und klang vorher nicht
+        if(!done&&matches(ev)&&!ringing){if(!stableSince)stableSince=now;else if(now-stableSince>600){stableSince=0;lastUsedOn=lastOn;hitCurrent(false);}}
+        else if(!done)stableSince=0;
+      }
+      else if(ev){
         if(hitOK(ev)&&(lastHitPc!==pc(ev.midi)||onsetFlag||ev.tech))hitCurrent(false);
         else if(stableMidi!==null&&!ev.wrong&&isWrong(ev)){
           // Fehlgriff erst zählen, wenn der falsche Ton neu angeschlagen wurde und 300 ms stabil bleibt
@@ -834,7 +887,7 @@ function tick(){
       const tg=events[idx]?events[idx].beat:(events.length?events[events.length-1].beat+1:0);
       scrollBeat+=(tg-scrollBeat)*.12;
     }else{
-      const b=curBeat();scrollBeat=b;const fb=Math.floor(b);
+      onQ.length=0;const b=curBeat();scrollBeat=b;const fb=Math.floor(b);
       if(fb>lastClickBeat){lastClickBeat=fb;if(!ytActive())click(((fb%4)+4)%4===0);}
       const c=$('#count');if(b<baseBeat-.05){c.textContent=Math.ceil(baseBeat-b);c.style.opacity=1;}else c.style.opacity=0;
       for(let i=0;i<events.length;i++){
@@ -842,8 +895,10 @@ function tick(){
         const wo=ev.beat-.45,wc=ev.beat+Math.min(.7,Math.max(.35,ev.dur*.85));
         if(b<wo)break;
         if(!micOn){if(b>ev.beat){ev.state='pass';idx=i+1;updHud();}continue;}
-        if(b<=wc){const pv=events[i-1],fresh=lastOnsetBeat>=wo||!pv||pc(pv.midi)!==pc(ev.midi)||ev.tech;
-          if(hitOK(ev)&&fresh){ev.state='hit';hits++;idx=i+1;flash('good');updHud();}}
+        if(b<=wc){let ok=false;
+          if(useOnset()){const r=onLog.find(r=>!r.used&&r.beat>=wo-.1&&r.beat<=wc&&onsetMatches(r,ev));if(r){r.used=true;ok=true;}else if(ev.tech&&hitOK(ev))ok=true;}
+          else{const pv=events[i-1],fresh=lastOnsetBeat>=wo||!pv||pc(pv.midi)!==pc(ev.midi)||ev.tech;ok=hitOK(ev)&&fresh;}
+          if(ok){ev.state='hit';hits++;idx=i+1;flash('good');updHud();}}
         else{ev.state='miss';misses++;idx=i+1;flash('bad');updHud();}
       }
       const last=events[events.length-1];if(!last||b>last.beat+last.dur+1)finish();
