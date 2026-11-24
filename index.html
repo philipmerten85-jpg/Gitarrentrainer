@@ -1179,13 +1179,21 @@ function getToken(){return new Promise((res,rej)=>{
   if(tokOK())return res(gTok.t);
   if(!window.google||!google.accounts||!google.accounts.oauth2)return rej(new Error('Google-Anmeldung lädt noch – bitte gleich nochmal tippen.'));
   tokenClient=google.accounts.oauth2.initTokenClient({client_id:GCLIENT,scope:GSCOPE,
-    callback:r=>{if(r&&r.access_token){gTok={t:r.access_token,exp:Date.now()+(+r.expires_in||3600)*1000};store.set('gt-gtok',gTok);res(gTok.t);}else rej(new Error('Anmeldung abgebrochen'));},
+    callback:r=>{if(r&&r.access_token&&google.accounts.oauth2.hasGrantedAllScopes&&!google.accounts.oauth2.hasGrantedAllScopes(r,GSCOPE)){store.set('gt-gconsent',0);rej(new Error('Der Drive-Zugriff wurde nicht erlaubt. Nochmal tippen und im Anmeldefenster den Haken bei „Google Drive-Dateien ansehen“ setzen.'));return;}
+      if(r&&r.access_token){gTok={t:r.access_token,exp:Date.now()+(+r.expires_in||3600)*1000};store.set('gt-gtok',gTok);res(gTok.t);}else rej(new Error('Anmeldung abgebrochen'));},
     error_callback:e=>rej(new Error(e&&e.type==='popup_closed'?'Anmeldefenster geschlossen':'Anmeldung fehlgeschlagen'))});
   tokenClient.requestAccessToken({prompt:store.get('gt-gconsent',0)?'':'consent'});});}
 async function gfetch(url,t){const r=await fetch(url,{headers:{Authorization:'Bearer '+t}});
   if(r.status===401){gTok=null;store.set('gt-gtok',null);throw new Error('Google-Anmeldung abgelaufen – bitte nochmal tippen.');}
   if(r.status===404)throw new Error('Ordner nicht gefunden – stimmt der Ordner-Link?');
-  if(!r.ok)throw new Error('Google Drive antwortet mit Fehler '+r.status);return r;}
+  if(!r.ok){let j={};try{j=await r.json();}catch(e){}
+    const er=(j.error||{}),why=((er.errors||[])[0]||{}).reason||'',txt=(er.message||'')+' '+JSON.stringify(er.details||'');
+    if(r.status===403&&(why==='accessNotConfigured'||/SERVICE_DISABLED|has not been used|is disabled/i.test(txt)))
+      throw new Error('Fehler 403: Die „Google Drive API“ ist im Cloud-Projekt noch nicht aktiviert (Schritt 3). Falls du sie gerade aktiviert hast: ein paar Minuten warten und nochmal tippen.');
+    if(r.status===403&&(why==='insufficientPermissions'||/SCOPE_INSUFFICIENT|insufficient/i.test(txt))){gTok=null;store.set('gt-gtok',null);store.set('gt-gconsent',0);
+      throw new Error('Fehler 403: Bei der Google-Anmeldung wurde der Drive-Zugriff nicht erlaubt. Nochmal tippen und im Anmeldefenster den Haken bei „Google Drive-Dateien ansehen“ setzen.');}
+    throw new Error('Google Drive antwortet mit Fehler '+r.status+(why?' ('+why+')':'')+(er.message?': '+er.message:''));}
+  return r;}
 async function driveList(t){
   const q=encodeURIComponent("'"+driveFolder()+"' in parents and trashed=false");let files=[],page='';
   do{const r=await gfetch('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=nextPageToken,files(id,name,modifiedTime,mimeType)&pageSize=200&supportsAllDrives=true&includeItemsFromAllDrives=true'+(page?'&pageToken='+page:''),t);
