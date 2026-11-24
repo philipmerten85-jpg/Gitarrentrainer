@@ -218,13 +218,14 @@ nav button.on{color:var(--amber)}
         <label class="chk" title="Schleife"><input type="checkbox" id="songLoop">🔁</label>
       </div>
       <div class="r" id="ytRow">
+        <select id="trk" style="max-width:130px"></select>
         <button class="chip" id="ytBtn">▶ YouTube</button>
         <span id="ytSync" style="display:none;gap:6px;align-items:center;flex-wrap:wrap">
           <b id="ytOff" style="font-family:var(--mono);color:var(--text)">0,0 s</b>
           <button class="chip" id="ytM">−0,1</button><button class="chip" id="ytP">+0,1</button><button class="chip pri" id="ytNow">Jetzt = Takt 1</button>
         </span>
       </div>
-      <div class="yin" id="ytIn" style="display:none"><input id="ytUrl" placeholder="YouTube-Link einfügen" autocapitalize="off" autocorrect="off"><button class="chip pri" id="ytOk">OK</button><button class="chip" id="ytDel">✕</button></div>
+      <div class="yin" id="ytIn" style="display:none"><input id="ytUrl" placeholder="YouTube-Link einfügen" autocapitalize="off" autocorrect="off"><button class="chip pri" id="ytOk">OK</button><a class="chip" id="ytSearch" target="_blank" rel="noopener" style="text-decoration:none">🔎</a><button class="chip" id="ytDel">✕</button></div>
       <div id="songHint" style="font-size:11px;line-height:1.35"></div>
     </div>
     <div class="freeCtl" id="freeCtl">
@@ -244,9 +245,9 @@ nav button.on{color:var(--amber)}
   <section class="view" id="vLib"><div class="pad">
     <div class="sec">Songs</div>
     <div class="card">
-      <button class="btn pri" id="songImp" style="width:100%">＋ Song importieren</button>
-      <input type="file" id="songFile" style="display:none">
-      <div style="font-size:12px;color:var(--mute);margin-top:8px;line-height:1.45">Guitar-Pro-Dateien (.gp, .gpx, .gp5, .gp4, .gp3) oder MusicXML – z. B. als Export aus Songsterr oder als Guitar-Pro-Tab von Ultimate Guitar. Songs bleiben nur auf diesem Gerät.</div>
+      <button class="btn pri" id="songImp" style="width:100%">＋ Songs importieren</button>
+      <input type="file" id="songFile" multiple style="display:none">
+      <div style="font-size:12px;color:var(--mute);margin-top:8px;line-height:1.45">Mehrere Dateien auf einmal auswählen – auch direkt aus Google Drive oder iCloud. Guitar Pro (.gp, .gpx, .gp5, .gp4, .gp3) oder MusicXML. Die passende Gitarrenspur wird automatisch gewählt. Songs bleiben nur auf diesem Gerät.</div>
       <div id="songErr" style="color:var(--red);font-size:13px;margin-top:6px"></div>
     </div>
     <div id="songList"></div>
@@ -554,40 +555,60 @@ function genRound(L){
 }
 
 // ==CONV
-// Guitar-Pro/MusicXML-Partitur (alphaTab) in Spiel-Ereignisse umwandeln. Zeitbasis: Sekunden, umgerechnet auf Referenztempo.
+// Guitar-Pro/MusicXML-Partitur (alphaTab) in Spiel-Ereignisse umwandeln – mit Wiederholungen und Tempowechseln.
 function songTracks(score){return score.tracks.map((t,i)=>{let n=0;const st=t.staves[0];
   if(st&&!st.isPercussion)for(const b of st.bars)for(const v of b.voices)for(const bt of v.beats)if(!bt.isRest)n+=bt.notes.length;
   return {i,name:t.name||('Spur '+(i+1)),strings:st?st.tuning.length:0,perc:!st||st.isPercussion,notes:n};}).filter(t=>!t.perc&&t.notes>0&&t.strings>=4);}
+// Welche Spur passt am besten zum Gitarre-Üben?
+function bestTrack(tr){const sc=t=>(t.strings===6?3:0)+(/lead|solo|melod/i.test(t.name)?2:0)+(/guit|gitar|gtr|git\b|acoustic|akustik|electric|e-git/i.test(t.name)?1:0)+(/bass|drum|key|piano|vocal|voc\b|synth|string|organ|orgel/i.test(t.name)?-5:0);
+  return tr.slice().sort((a,b)=>sc(b)-sc(a)||b.notes-a.notes)[0];}
+// Reihenfolge der Takte inkl. Wiederholungen und Klammern (1./2. Ende)
+function playOrder(mbs){
+  const order=[];let i=0,rs=0,pass=0,seen=-1,g=0;
+  while(i<mbs.length&&g++<4000){
+    const mb=mbs[i];
+    if(mb.isRepeatStart&&seen!==i){rs=i;pass=0;seen=i;}
+    const alt=mb.alternateEndings||0;
+    if(alt&&!(alt&(1<<pass))){i++;continue;}
+    order.push(i);
+    if(mb.repeatCount>0&&pass<mb.repeatCount-1){pass++;i=rs;continue;}
+    const nx=mbs[i+1];
+    if(mb.repeatCount>0||(alt&&!(nx&&(nx.alternateEndings||nx.repeatCount>0)))){pass=0;rs=i+1;seen=-1;}
+    i++;
+  }
+  return order;}
 function convertTrack(score,ti){
   const tr=score.tracks[ti],st=tr.staves[0],tun=st.tuning; // tun[0] = höchste Saite
-  // Tempo-Karte aus den Takten
-  const mbs=score.masterBars;let bpm=score.tempo||120,sec=0;const seg=[];
-  for(const mb of mbs){
+  const mbs=score.masterBars,order=playOrder(mbs);
+  let bpm=score.tempo||120,sec=0;const inst=[];
+  for(const idx of order){
+    const mb=mbs[idx],dur=mb.calculateDuration();
     const autos=(mb.tempoAutomations||(mb.tempoAutomation?[mb.tempoAutomation]:[])).slice().sort((a,b)=>a.ratioPosition-b.ratioPosition);
-    const dur=mb.calculateDuration();let pos=0;
-    for(const a of autos){const t=a.ratioPosition*dur;if(t>pos){seg.push({tick:mb.start+pos,sec,bpm});sec+=(t-pos)/960*60/bpm;pos=t;}bpm=a.value;}
-    seg.push({tick:mb.start+pos,sec,bpm});sec+=(dur-pos)/960*60/bpm;
+    const segs=[];let pos=0;
+    for(const a of autos){const t=a.ratioPosition*dur;if(t>pos){segs.push({pos,sec,bpm});sec+=(t-pos)/960*60/bpm;pos=t;}bpm=a.value;}
+    segs.push({pos,sec,bpm});sec+=(dur-pos)/960*60/bpm;
+    inst.push({idx,segs});
   }
-  const t2s=tick=>{let s=seg[0];for(const x of seg){if(x.tick<=tick)s=x;else break;}return s.sec+(tick-s.tick)/960*60/s.bpm;};
-  const ref=seg.length?seg[0].bpm:120;
-  const bars=mbs.map(mb=>t2s(mb.start)*ref/60);
-  const ev=[];let tuningStd=tun.length===6&&tun.join()===[64,59,55,50,45,40].join();
-  for(const bar of st.bars){const mb=mbs[bar.index];
+  const ref=inst.length?inst[0].segs[0].bpm:120;
+  const at=(I,p)=>{let s=I.segs[0];for(const x of I.segs){if(x.pos<=p)s=x;else break;}return s.sec+(p-s.pos)/960*60/s.bpm;};
+  const bars=inst.map(I=>I.segs[0].sec*ref/60),nos=inst.map(I=>I.idx+1);
+  const ev=[];const tuningStd=tun.length===6&&tun.join()===[64,59,55,50,45,40].join();
+  inst.forEach((I,k)=>{const bar=st.bars[I.idx];if(!bar)return;
     for(const v of bar.voices.slice(0,1))for(const bt of v.beats){
       if(bt.isRest||!bt.notes.length)continue;
       const ns=bt.notes.filter(n=>!n.isTieDestination&&!n.isDead&&n.fret>=0);if(!ns.length)continue;
-      const tick=mb.start+bt.playbackStart,beat=t2s(tick)*ref/60,end=t2s(tick+bt.playbackDuration)*ref/60;
-      const conv=n=>{const si=tun.length-n.string;return {s:Math.min(5,Math.max(0,si-(tun.length-6>0?tun.length-6:0))),f:n.fret,midi:n.realValue};};
+      const beat=at(I,bt.playbackStart)*ref/60,end=at(I,bt.playbackStart+bt.playbackDuration)*ref/60;
+      const conv=n=>{const si=tun.length-n.string;return {s:Math.min(5,Math.max(0,si-(tun.length>6?tun.length-6:0))),f:n.fret,midi:n.realValue};};
       const all=ns.map(conv).sort((a,b)=>b.midi-a.midi);
-      const p=all[0],e={s:p.s,f:p.f,midi:p.midi,beat:+beat.toFixed(4),dur:+Math.max(.1,end-beat).toFixed(4),bar:bar.index};
+      const p=all[0],e={s:p.s,f:p.f,midi:p.midi,beat:+beat.toFixed(4),dur:+Math.max(.1,end-beat).toFixed(4),bar:k};
       if(all.length>1)e.alts=all.slice(1);
       const n0=ns.find(n=>n.realValue===p.midi)||ns[0];
       if(n0.isHammerPullDestination)e.tech=n0.hammerPullOrigin&&n0.hammerPullOrigin.fret>n0.fret?'p':'h';
-      else if(n0.slideTarget===undefined&&n0.slideOrigin){e.tech=n0.slideOrigin.fret<n0.fret?'/':'\\';}
+      else if(n0.slideOrigin){e.tech=n0.slideOrigin.fret<n0.fret?'/':'\\';}
       ev.push(e);
-    }}
+    }});
   ev.sort((a,b)=>a.beat-b.beat);
-  return {bpm:Math.round(ref),bars,events:ev,tuning:tun,tuningStd,secPerBeat:60/ref};
+  return {bpm:Math.round(ref),bars,nos,events:ev,tuning:tun,tuningStd};
 }
 
 // ---------- Laufzeit-Status ----------
@@ -615,7 +636,7 @@ function pluck(midi){
   let p=0;for(let i=0;i<len;i++){const nx=(p+1)%N,v=ring[p];ring[p]=.4985*(ring[p]+ring[nx]);d[i]=v*.6;p=nx;}
   const s=ac.createBufferSource(),g=ac.createGain();g.gain.value=.9;s.buffer=b;s.connect(g).connect(ac.destination);s.start();}
 async function toggleMic(){
-  if(micOn){stream&&stream.getTracks().forEach(t=>t.stop());micOn=false;updMic();return;}
+  if(micOn){stream&&stream.getTracks().forEach(t=>t.stop());micOn=false;store.set('gt-mic',0);updMic();return;}
   try{
     // iOS: Ausgabe über Lautsprecher statt Hörmuschel, solange das Mikro läuft
     try{if(navigator.audioSession)navigator.audioSession.type='play-and-record';}catch(e){}
@@ -631,7 +652,7 @@ async function toggleMic(){
     const s=ac.createMediaStreamSource(stream);analyser=ac.createAnalyser();analyser.fftSize=4096;buf=new Float32Array(4096);
     const mute=ac.createGain();mute.gain.value=0;
     s.connect(analyser);analyser.connect(mute).connect(ac.destination);
-    D=ac.sampleRate>30000?2:1;ds=new Float32Array(4096/D);floorRms=.003;micOn=true;$('#banner').style.display='none';
+    D=ac.sampleRate>30000?2:1;ds=new Float32Array(4096/D);floorRms=.003;micOn=true;store.set('gt-mic',1);$('#banner').style.display='none';
     if(src==='coach'&&!running)newCoachRound();
   }catch(e){
     micOn=false;const b=$('#banner');b.style.display='block';
@@ -1046,26 +1067,42 @@ function modal(title,sub,items){$('#mTitle').textContent=title;$('#mSub').textCo
 function closeModal(){$('#modal').classList.remove('on');}
 $('#mClose').onclick=closeModal;$('#modal').onclick=e=>{if(e.target.id==='modal')closeModal();};
 $('#songImp').onclick=()=>{$('#songErr').textContent='';$('#songFile').value='';$('#songFile').click();};
+// Originaldateien in IndexedDB, damit die Spur später gewechselt werden kann
+const idb=(()=>{let p=null;const open=()=>p||(p=new Promise((res,rej)=>{try{const r=indexedDB.open('gt',1);r.onupgradeneeded=()=>r.result.createObjectStore('files');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);}catch(e){rej(e);}}));
+  const tx=(m,f)=>open().then(db=>new Promise((res,rej)=>{const t=db.transaction('files',m),q=f(t.objectStore('files'));t.oncomplete=()=>res(q&&q.result);t.onerror=()=>rej(t.error);}));
+  return {put:(k,v)=>tx('readwrite',s=>s.put(v,k)).catch(()=>{}),get:k=>tx('readonly',s=>s.get(k)).catch(()=>null),del:k=>tx('readwrite',s=>s.delete(k)).catch(()=>{})};})();
+function makeSong(score,ti,name,id){
+  const c=convertTrack(score,ti),tracks=songTracks(score);
+  return {id,title:score.title||name.replace(/\.[^.]+$/,''),artist:score.artist||'',track:score.tracks[ti].name||'Spur '+(ti+1),ti,
+    tracks:tracks.map(t=>({i:t.i,name:t.name,notes:t.notes})),bpm:c.bpm,bars:c.bars.map(x=>+x.toFixed(4)),events:c.events,tuning:c.tuning,tuningStd:c.tuningStd,yt:null};}
 $('#songFile').onchange=async e=>{
-  const file=e.target.files&&e.target.files[0];if(!file)return;
-  const err=$('#songErr'),btn=$('#songImp');btn.textContent='Lese Datei …';
+  const files=[...(e.target.files||[])];if(!files.length)return;
+  const err=$('#songErr'),btn=$('#songImp'),fails=[];let first=null,okN=0;
+  btn.textContent='Lade Import-Baustein …';
   try{
     const at=await loadAT();
-    const data=new Uint8Array(await file.arrayBuffer());
-    let score;try{score=at.importer.ScoreLoader.loadScoreFromBytes(data,new at.Settings());}
-    catch(x){throw new Error('Diese Datei kann ich nicht lesen. Unterstützt: Guitar Pro 3–8 und MusicXML.');}
-    const tracks=songTracks(score);
-    if(!tracks.length)throw new Error('In der Datei ist keine Gitarrenspur mit Noten.');
-    const title=score.title||file.name.replace(/\.[^.]+$/,''),artist=score.artist||'';
-    const add=t=>{
-      const c=convertTrack(score,t.i);
-      const sg={id:Date.now(),title,artist,track:t.name,bpm:c.bpm,bars:c.bars.map(x=>+x.toFixed(4)),events:c.events,tuning:c.tuning,tuningStd:c.tuningStd,yt:null};
-      songs.unshift(sg);if(!saveSongs()){songs.shift();err.textContent='Kein Speicherplatz mehr – lösche einen anderen Song.';return;}
-      renderSongs();openSong(sg.id);};
-    if(tracks.length===1)add(tracks[0]);
-    else modal('Welche Spur willst du spielen?',title+(artist?' – '+artist:''),tracks.map(t=>({ic:'🎸',name:t.name,sub:t.notes+' Noten · '+t.strings+' Saiten',go:()=>add(t)})));
+    for(let k=0;k<files.length;k++){
+      const file=files[k];btn.textContent='Importiere '+(k+1)+' von '+files.length+' …';
+      try{
+        const buf=await file.arrayBuffer();
+        let score;try{score=at.importer.ScoreLoader.loadScoreFromBytes(new Uint8Array(buf),new at.Settings());}catch(x){throw new Error('kein Guitar Pro/MusicXML');}
+        const tr=songTracks(score);if(!tr.length)throw new Error('keine Gitarrenspur');
+        const t=bestTrack(tr),id=Date.now()+k;
+        const sg=makeSong(score,t.i,file.name,id);
+        // gleicher Song schon vorhanden? → ersetzen (Video-Abgleich behalten)
+        const old=songs.find(q=>q.title===sg.title&&q.artist===sg.artist);
+        if(old){sg.yt=old.yt;songs=songs.filter(q=>q!==old);idb.del(old.id);}
+        songs.unshift(sg);
+        if(!saveSongs()){songs.shift();throw new Error('Speicher voll');}
+        await idb.put(id,{name:file.name,buf});
+        okN++;if(!first)first=sg;
+      }catch(x){fails.push(file.name+' ('+x.message+')');}
+    }
   }catch(x){err.textContent=x.message;}
-  btn.textContent='＋ Song importieren';};
+  btn.textContent='＋ Songs importieren';renderSongs();
+  if(fails.length)err.textContent='Nicht importiert: '+fails.join(', ');
+  if(okN===1&&first)openSong(first.id);
+  else if(okN>1)$('#songErr').insertAdjacentHTML('afterbegin','<span style="color:var(--green)">✓ '+okN+' Songs importiert. </span>');};
 function renderSongs(){
   const l=$('#songList');l.innerHTML='';
   songs.forEach(sg=>{const b=document.createElement('div');b.className='item';b.style.cursor='pointer';
@@ -1074,7 +1111,7 @@ function renderSongs(){
     b.querySelector('small').textContent=sg.track+' · '+sg.bars.length+' Takte · '+sg.bpm+' BPM'+(sg.yt?' · ▶ Video':'')+(sg.tuningStd?'':' · Stimmung '+tuneName(sg.tuning));
     b.onclick=()=>openSong(sg.id);
     const x=b.querySelector('.x');x.onclick=ev=>{ev.stopPropagation();
-      if(x.classList.contains('c')){songs=songs.filter(q=>q.id!==sg.id);saveSongs();renderSongs();}
+      if(x.classList.contains('c')){songs=songs.filter(q=>q.id!==sg.id);saveSongs();idb.del(sg.id);renderSongs();}
       else{x.classList.add('c');x.textContent='Löschen?';setTimeout(()=>{x.classList.remove('c');x.textContent='✕';},3000);}};
     l.appendChild(b);});}
 function songEvents(){return song.events.filter(e=>e.bar>=songFrom&&e.bar<=songTo).map(e=>({...e,state:'pending',wrong:0,rt:0}));}
@@ -1084,12 +1121,20 @@ function applySong(){
   $('#barFrom').value=songFrom+1;$('#barTo').value=songTo+1;
   songSpeed=+$('#spd').value;baseBeat=song.bars[songFrom];setBpm(song.bpm*songSpeed);
   events=songEvents();$('#ytNow').textContent='Jetzt = Takt '+(songFrom+1);reset();}
+function fillTracks(){const t=$('#trk');t.innerHTML='';const list=song.tracks||[{i:song.ti||0,name:song.track}];
+  list.forEach(x=>{const o=document.createElement('option');o.value=x.i;o.textContent='🎸 '+x.name;if(x.i===(song.ti??list[0].i))o.selected=true;t.appendChild(o);});
+  t.style.display=list.length>1?'':'none';}
+$('#trk').onchange=async()=>{if(!song)return;const ti=+$('#trk').value,f=await idb.get(song.id);
+  if(!f){$('#songHint').textContent='Für den Spurwechsel die Datei bitte einmal neu importieren.';fillTracks();return;}
+  try{const at=await loadAT(),score=at.importer.ScoreLoader.loadScoreFromBytes(new Uint8Array(f.buf),new at.Settings());
+    const n=makeSong(score,ti,f.name,song.id);n.yt=song.yt;Object.assign(song,n);saveSongs();renderSongs();openSong(song.id);}
+  catch(x){$('#songHint').textContent='Spurwechsel fehlgeschlagen: '+x.message;}};
 function openSong(id){
-  song=songs.find(q=>q.id===id);if(!song)return;
+  song=songs.find(q=>q.id===id);if(!song)return;fillTracks();
   curFree={name:song.title};src='song';
   $('#barFrom').max=$('#barTo').max=song.bars.length;$('#barFrom').value=1;$('#barTo').value=song.bars.length;
   $('#songHint').textContent=(song.tuningStd?'':'⚠ Stimmung dieses Songs: '+tuneName(song.tuning)+' · ')+(song.yt?'Tipp: Mit Kopfhörern hört die App das Video nicht mit.':'');
-  setMode(micOn?'wait':'tempo');applySong();show('play');setupYT();}
+  setMode(song.yt||!micOn?'tempo':'wait');applySong();show('play');setupYT();}
 ['#barFrom','#barTo','#spd'].forEach(k=>$(k).onchange=()=>{if(song)applySong();});
 // YouTube
 function ytId(u){u=String(u).trim();const m=u.match(/(?:youtu\.be\/|[?&]v=|shorts\/|embed\/|live\/)([\w-]{11})/);return m?m[1]:(/^[\w-]{11}$/.test(u)?u:null);}
@@ -1109,7 +1154,7 @@ async function setupYT(){
   yt=new YT.Player('ytBox',{videoId:song.yt.id,playerVars:{playsinline:1,rel:0,modestbranding:1},
     events:{onReady:()=>{ytOK=true;},onError:()=>{$('#songHint').textContent='Dieses Video lässt sich nicht einbetten. Probier ein anderes.';}}});
   yt._vid=song.yt.id;}
-$('#ytBtn').onclick=()=>{const i=$('#ytIn');i.style.display=i.style.display==='flex'?'none':'flex';$('#ytUrl').value=song&&song.yt?'https://youtu.be/'+song.yt.id:'';};
+$('#ytBtn').onclick=()=>{$('#ytSearch').href='https://www.youtube.com/results?search_query='+encodeURIComponent((song?song.title+' '+song.artist:'')+' guitar');const i=$('#ytIn');i.style.display=i.style.display==='flex'?'none':'flex';$('#ytUrl').value=song&&song.yt?'https://youtu.be/'+song.yt.id:'';};
 $('#ytOk').onclick=()=>{const id=ytId($('#ytUrl').value);if(!id){$('#songHint').textContent='Das ist kein gültiger YouTube-Link.';return;}
   song.yt={id,off:song.yt&&song.yt.id===id?song.yt.off:0};saveSongs();$('#ytIn').style.display='none';renderSongs();
   $('#songHint').textContent='Starte das Video und tippe genau beim Einsatz von Takt '+(songFrom+1)+' auf „Jetzt = Takt '+(songFrom+1)+'“. Tipp: Mit Kopfhörern hört die App das Video nicht mit.';
@@ -1153,7 +1198,8 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){if(running
 window.addEventListener('resize',()=>{drawFret();if(view==='me')renderMe();});
 // iOS: AudioContext beim ersten Antippen freischalten
 let unlocked=false;
-['touchend','click'].forEach(ev=>document.addEventListener(ev,()=>{try{ensureAC();if(!unlocked){unlocked=true;const b=ac.createBuffer(1,1,22050),s=ac.createBufferSource();s.buffer=b;s.connect(ac.destination);s.start();}}catch(e){}},{passive:true}));
+let autoMic=false;
+['touchend','click'].forEach(ev=>document.addEventListener(ev,e=>{try{ensureAC();if(!autoMic){autoMic=true;if(!micOn&&store.get('gt-mic',0)&&!(e.target.closest&&e.target.closest('#micBtn')))toggleMic();}if(!unlocked){unlocked=true;const b=ac.createBuffer(1,1,22050),s=ac.createBufferSource();s.buffer=b;s.connect(ac.destination);s.start();}}catch(e){}},{passive:true}));
 
 newCoachRound();
 requestAnimationFrame(tick);
