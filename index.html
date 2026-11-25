@@ -166,6 +166,7 @@ nav button.on{color:var(--amber)}
 
 /* Querformat / kleine Höhe */
 @media (max-height:520px){
+  .stage{min-height:120px} .freeCtl{padding-top:4px} .freeCtl .seg button{padding:5px 10px}
   .top{padding:6px 14px 4px} .top h1{font-size:15px}
   .hud{padding-bottom:6px} .big{font-size:28px} .heard{font-size:20px}
   #fret{display:none}
@@ -762,44 +763,77 @@ function listen(){
   }
   if(tunBuf.length>=3){const t=[...tunBuf].sort((a,b)=>a-b);cents=Math.round(t[t.length>>1]*100);}
 }
-// ---------- Anschlag-Erkennung (mehrstimmig) ----------
-// Statt „welcher Ton klingt gerade?“ wird gefragt: „welcher Ton ist bei diesem Anschlag NEU dazugekommen?“
-// Dazu wird das Spektrum kurz vor dem Anschlag vom Spektrum danach abgezogen – nachklingende Saiten fallen so heraus.
-let an2=null,spec=null,nb=0,binHz=1,lowBin=1,sring=[],fluxH=[],lastOn=-1e9,pend=null,onQ=[],onLog=[];
+// ---------- Anschlag-Erkennung (mehrstimmig, mit Erwartung aus dem Tab) ----------
+// Grundidee: Nicht „welcher Ton klingt?“, sondern „welcher Ton ist bei diesem Anschlag NEU dazugekommen?“
+// – Spektrum nach dem Anschlag minus Spektrum davor; nachklingende Saiten fallen heraus.
+// Zusätzlich weiß die App aus dem Tab, welcher Ton als Nächstes kommt, und prüft gezielt dessen Obertonmuster
+// (eigene, niedrigere Schwelle), und sie erkennt auch leise Anschläge, bei denen nur der erwartete Ton ansteigt.
+let an2=null,spec=null,nb=0,binHz=1,lowBin=1,sring=[],fluxH=[],lastOn=-1e9,pend=null,onQ=[],onLog=[],noiseSpec=null,noiseN=0,lastExpOn=-1e9,specStart=0;
 function setupSpec(srcNode,sink){an2=ac.createAnalyser();an2.fftSize=8192;an2.smoothingTimeConstant=0;srcNode.connect(an2);an2.connect(sink);
-  binHz=ac.sampleRate/8192;nb=Math.min(an2.frequencyBinCount,Math.ceil(5200/binHz));lowBin=Math.floor(70/binHz);spec=new Float32Array(an2.frequencyBinCount);sring=[];fluxH=[];pend=null;onQ=[];}
+  binHz=ac.sampleRate/8192;nb=Math.min(an2.frequencyBinCount,Math.ceil(5200/binHz));lowBin=Math.floor(70/binHz);spec=new Float32Array(an2.frequencyBinCount);sring=[];fluxH=[];pend=null;onQ=[];noiseSpec=null;noiseN=0;specStart=performance.now();}
 function pk(D,f){const lo=Math.max(1,Math.floor(f*.983/binHz)),hi=Math.min(nb-1,Math.ceil(f*1.017/binHz));let m=0;for(let i=lo;i<=hi;i++)if(D[i]>m)m=D[i];return m;}
 const HW=[1,.9,.8,.7,.6,.5,.45,.4];
+// Grundton-Gewicht je Saite: tiefe Saiten haben am Handy-Mikro kaum Grundton
+const H1S=[1,.9,.8,.6,.45,.35];
+const fOf=m=>cal.a4*Math.pow(2,(m-69)/12);
+function tmpl(S,m,s){const f=fOf(m);let v=0;for(let h=1;h<=8;h++){const fh=h*f*Math.sqrt(1+.00008*h*h);if(fh>5000)break;v+=pk(S,fh)*(h===1&&s!=null?H1S[s]:HW[h-1]);}return v;}
 function noteScores(D){
   const sc=[];let mx=0;
-  for(let m=38;m<=90;m++){const f=cal.a4*Math.pow(2,(m-69)/12);let s=0,odd=0,n=0;
-    for(let h=1;h<=8;h++){const fh=h*f*Math.sqrt(1+.00008*h*h);if(fh>5000)break;const v=pk(D,fh)*HW[h-1];s+=v;if(h%2)odd+=v;n++;}
+  for(let m=38;m<=90;m++){const f=fOf(m);let s=0,odd=0;
+    for(let h=1;h<=8;h++){const fh=h*f*Math.sqrt(1+.00008*h*h);if(fh>5000)break;const v=pk(D,fh)*HW[h-1];s+=v;if(h%2)odd+=v;}
     if(odd<.3*s)s*=.5;            // nur gerade Obertöne → eher eine Oktave höher
     sc.push({m,s});if(s>mx)mx=s;}
   return {sc,mx};}
+// Welche Töne werden gerade erwartet? (Warten: aktueller + nächster Ton; Tempo: Töne im Zeitfenster)
+function expTargets(){const out=[];if(!running||paused)return out;
+  const add=e=>{if(!e)return;out.push({m:e.midi,s:e.s});if(e.alts)e.alts.forEach(a=>out.push({m:a.midi,s:a.s}));};
+  if(mode==='wait'){add(events[idx]);add(events[idx+1]);}
+  else{const b=curBeat();for(const e of events){if(e.state!=='pending')continue;if(e.beat>b+.8)break;if(e.beat>=b-.6)add(e);}}
+  return out;}
 function specStep(now){
   if(!an2)return;
   an2.getFloatFrequencyData(spec);
   const cur=new Float32Array(nb);for(let i=0;i<nb;i++)cur[i]=Math.pow(10,(spec[i]>-160?spec[i]:-160)/20);
-  const ref=sring.length>=3?sring[sring.length-3]:null;let flux=0;
-  if(ref){for(let i=lowBin;i<nb;i++){const a=cur[i],b=ref.m[i];if(a>b)flux+=Math.sqrt(a)-Math.sqrt(b);}}
+  // Raumrauschen merken (nur in ruhigen Momenten)
+  if(rms<thr()){noiseN++;if(!noiseSpec)noiseSpec=cur.slice();else for(let i=0;i<nb;i++)noiseSpec[i]=noiseSpec[i]*.95+cur[i]*.05;}
+  const warm=now-specStart<800;   // Mikro schwingt sich ein – noch nichts auswerten
+  const ref=sring.length>=3?sring[sring.length-3]:null;let flux=0,tot=0;
+  if(ref){for(let i=lowBin;i<nb;i++){const a=cur[i],b=ref.m[i];tot+=Math.sqrt(a);if(a>b)flux+=Math.sqrt(a)-Math.sqrt(b);}}
+  const rel=tot>0?flux/tot:0;   // relativer Zuwachs – unabhängig von der Lautstärke (leise Anschläge!)
   sring.push({m:cur,t:now});if(sring.length>14)sring.shift();
-  fluxH.push(flux);if(fluxH.length>60)fluxH.shift();
+  fluxH.push(rel);if(fluxH.length>60)fluxH.shift();
   const srt=[...fluxH].sort((a,b)=>a-b),med=srt[srt.length>>1]||0;
-  const on=ref&&flux>med*2.5+thr()*.6&&rms>thr()*.7&&now-lastOn>110;
+  const on=!warm&&ref&&rel>Math.max(med*2.2,.05)&&rms>thr()*.6&&now-lastOn>110;
   if(on){lastOn=now;lastOnsetT=now;lastOnsetBeat=curBeat();onsetFlag=true;
     pend={t:now,beat:curBeat(),pre:sring[Math.max(0,sring.length-5)].m,n:0,acc:new Float32Array(nb)};}
+  const exp=expTargets();
+  // Stufe 2: leiser Anschlag ohne deutlichen Gesamt-Zuwachs – der ERWARTETE Ton steigt aber klar an
+  if(!warm&&!pend&&noiseN>20&&exp.length&&sring.length>=8&&now-lastOn>250&&now-lastExpOn>250){
+    const old=sring[sring.length-8].m;
+    for(const t of exp){
+      if(lastHitPc===pc(t.m)&&now-lastHitTime<450)continue;      // eben getroffener Ton klingt noch an – kein zweiter Treffer
+      // die ersten vier Obertöne müssen einzeln deutlich ansteigen (nicht nur Überlappung mit einem anderen Ton)
+      const f=fOf(t.m);let up=0;for(let h=1;h<=4;h++){const fh=h*f*Math.sqrt(1+.00008*h*h);const x=pk(cur,fh),y=pk(old,fh),z=pk(noiseSpec,fh);if(x>y*1.6&&x>z*5)up++;}
+      const a=tmpl(cur,t.m,t.s),b=tmpl(old,t.m,t.s),nz=tmpl(noiseSpec,t.m,t.s);
+      if(up>=2&&a>b*1.9&&a>nz*5){lastExpOn=now;lastOn=now;lastOnsetT=now;lastOnsetBeat=curBeat();
+        const r={t:now-60,beat:curBeat(),notes:[t.m],exp:[t.m],top:t.m,soft:true};onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();break;}}}
   if(pend){pend.n++;
     // Zuwachs gegenüber vor dem Anschlag aufsummieren (Frames 3–9 ≈ 50–150 ms)
     if(pend.n>=3)for(let i=0;i<nb;i++){const d=cur[i]-pend.pre[i];if(d>0)pend.acc[i]+=d;}
     if(pend.n>=9){const {sc,mx}=noteScores(pend.acc);
       const win=mx>0?sc.filter(x=>x.s>=.5*mx).sort((a,b)=>b.s-a.s).slice(0,4):[];
-      const r={t:pend.t,beat:pend.beat,notes:win.map(x=>x.m),top:win.length?win[0].m:null};
+      // Erwartete Töne: eigene Schablone je Saite, niedrigere Schwelle (30 % des stärksten neuen Tons)
+      const ex=[];
+      if(mx>0&&win.length){const R=pend.acc.slice(),tf=fOf(win[0].m);
+        for(let h=1;h<=10;h++){const fh=h*tf*Math.sqrt(1+.00008*h*h);const lo=Math.floor(fh*.983/binHz),hi=Math.ceil(fh*1.017/binHz);for(let i=lo;i<=hi&&i<nb;i++)R[i]=0;}
+        for(const t of exp){if(pc(t.m)===pc(win[0].m)){ex.push(t.m);continue;}const v=tmpl(R,t.m,t.s);if(v>=.3*mx)ex.push(t.m);}}
+      const r={t:pend.t,beat:pend.beat,notes:win.map(x=>x.m),exp:ex,top:win.length?win[0].m:null};
       onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();pend=null;}}
 }
 // Passt ein Anschlag zum Zielton (oder einem Ton des Akkords)?
-function onsetMatches(r,ev){const tg=[ev,...(ev.alts||[])],oct=$('#octTol').checked;
-  return r.notes.some(m=>tg.some(t=>oct?pc(m)===pc(t.midi):Math.abs(m-t.midi)===0||Math.abs(m-t.midi)===12));}
+function onsetMatches(r,ev){if(!ev)return false;const tg=[ev,...(ev.alts||[])],oct=$('#octTol').checked;
+  const eq=m=>tg.some(t=>oct?pc(m)===pc(t.midi):Math.abs(m-t.midi)===0||Math.abs(m-t.midi)===12);
+  return r.notes.some(eq)||(r.exp||[]).some(eq);}
 
 const matches=ev=>stableMidi!==null&&($('#octTol').checked?pc(stableMidi)===pc(ev.midi):stableMidi===ev.midi);
 // Großzügige Treffer-Prüfung: 2 von 4 Messungen genügen, kurz nach dem Anschlag auch 1 von 2; bis 60 Cent daneben zählt noch
@@ -825,7 +859,7 @@ function setMode(m){mode=m;document.querySelectorAll('#modeSeg button').forEach(
 function reset(){
   events.forEach(e=>{e.state='pending';e.wrong=0;e.rt=0;});assignFingers(events);
   if(src!=='song')baseBeat=0;
-  idx=0;hits=0;misses=0;running=false;paused=false;finished=false;scrollBeat=Math.min(baseBeat,events.length?events[0].beat:0);lastClickBeat=-99;onsetFlag=true;lastHitPc=null;lastJudged=null;recent=[];wrongCand=null;onQ=[];onLog=[];lastUsedOn=performance.now();stableSince=0;
+  idx=0;hits=0;misses=0;running=false;paused=false;finished=false;scrollBeat=Math.min(baseBeat,events.length?events[0].beat:0);lastClickBeat=-99;onsetFlag=true;lastHitPc=null;lastJudged=null;recent=[];wrongCand=null;onQ=[];onLog=[];lastUsedOn=performance.now();stableSince=0;aheadT=0;
   $('#sheet').classList.remove('on');$('#count').style.opacity=0;$('#startBtn').textContent='▶ Start';keepAwake(false);updHud();}
 function start(){
   ensureAC();
@@ -839,7 +873,7 @@ function start(){
   else{paused=false;if(ytActive())try{yt.playVideo();}catch(e){}const d=performance.now()-pauseAt;if(mode==='tempo')t0+=d;curStart+=d;$('#startBtn').textContent='⏸ Pause';updHud();}}
 function flash(k){const st=$('#stage');st.classList.add(k);clearTimeout(flash['t'+k]);flash['t'+k]=setTimeout(()=>st.classList.remove(k),220);}
 // Nachklingende Saiten, Obertöne (Oktave, Quinte darüber) und Anschlaggeräusche sind kein Fehlgriff
-let wrongCand=null,recent=[],lastUsedOn=0,stableSince=0;
+let wrongCand=null,recent=[],lastUsedOn=0,stableSince=0,aheadT=0;
 const useOnset=()=>!$('#simpleDet').checked;
 const related=(m,ref)=>m>=ref-1&&(pc(m)===pc(ref)||(m>ref+5&&pc(m)===pc(ref+7)));
 function isWrong(ev){
@@ -868,7 +902,12 @@ function tick(){
       if(ev&&useOnset()){
         let done=false;
         while(onQ.length&&!done){const r=onQ.shift();if(r.t<=lastUsedOn)continue;
-          if(onsetMatches(r,ev)){lastUsedOn=r.t;hitCurrent(false);done=true;}
+          // gleicher Ton nochmal: nur ein neuer Anschlag mit etwas Abstand zählt (kein Doppel-Auslöser)
+          if(lastHitPc===pc(ev.midi)&&r.t-lastUsedOn<280)continue;
+          if(onsetMatches(r,ev)){lastUsedOn=r.t;aheadT=0;hitCurrent(false);done=true;}
+          // Ton ausgelassen? Erst nach zwei klaren Anschlägen auf die Folgetöne nachziehen
+          else if(aheadT&&onsetMatches(r,events[idx+2])){ev.state='miss';misses++;idx++;lastUsedOn=r.t;hitCurrent(false);hitCurrent(false);aheadT=0;done=true;}
+          else if(onsetMatches(r,events[idx+1])){aheadT=r.t;}
           else if(r.top!==null&&!ev.wrong&&!ev.tech&&!related(r.top,ev.midi)&&pc(r.top)!==pc(ev.midi)){ev.wrong=1;flash('bad');}}
         const ringing=recent.some(m=>pc(m)===pc(ev.midi));
         if(!done&&ev.tech&&hitOK(ev)&&!ringing){lastUsedOn=lastOn;hitCurrent(false);done=true;}
@@ -1031,14 +1070,47 @@ function rr(c,x,y,w,h,r){c.beginPath();c.moveTo(x+r,y);c.arcTo(x+w,y,x+w,y+h,r);
 function draw(){
   if(view!=='coach'&&view!=='play')return;
   const r=fit(cv,cx),W=r.width,H=r.height;if(!W)return;cx.clearRect(0,0,W,H);
-  const top=Math.max(46,H*.16),bot=H-Math.max(40,H*.15),gap=(bot-top)/5,ppb=+$('#zoom').value*(W<500?.85:1),px=Math.max(78,W*.24);
+  const sm=H<240,top=sm?30:Math.max(44,H*.15),bot=H-(sm?42:Math.max(60,H*.21)),gap=(bot-top)/5,ppb=+$('#zoom').value*(W<500?.85:1),px=Math.max(78,W*.24);
   const X=b=>px+(b-scrollBeat)*ppb,Y=s=>top+s*gap,nh=Math.min(34,gap*.92),fs=Math.min(21,nh*.62),fing=$('#fing').checked;
   const b0=Math.floor(scrollBeat-px/ppb)-1,b1=Math.ceil(scrollBeat+(W-px)/ppb)+1;
   if(src==='song'&&song){for(let i=0;i<song.bars.length;i++){const bb=song.bars[i];if(bb<b0||bb>b1)continue;const x=X(bb);
       cx.strokeStyle='rgba(239,230,220,.3)';cx.lineWidth=1.5;cx.beginPath();cx.moveTo(x,top-6);cx.lineTo(x,bot+6);cx.stroke();
-      {const mv=(mArr(song)[i]||0);cx.fillStyle=mv>=.9?'#3ddc84':mv>=.5?'#f2a541':mv>0?'#ff5a5a':'rgba(188,176,164,.7)';cx.font='700 11px JetBrains Mono';cx.fillText(i+1,x+4,H-6);}}}
-  else for(let b=Math.max(0,b0);b<=b1;b++){const x=X(b);cx.strokeStyle=b%4===0?'rgba(239,230,220,.18)':'rgba(239,230,220,.05)';cx.lineWidth=b%4===0?1.5:1;cx.beginPath();cx.moveTo(x,top-6);cx.lineTo(x,bot+6);cx.stroke();
-    if(b%4===0){cx.fillStyle='rgba(163,150,138,.5)';cx.font='10px JetBrains Mono';cx.fillText(b/4+1,x+4,H-6);}}
+      {const mv=(mArr(song)[i]||0);cx.fillStyle=mv>=.9?'#3ddc84':mv>=.5?'#f2a541':mv>0?'#ff5a5a':'rgba(188,176,164,.7)';cx.font='700 11px JetBrains Mono';cx.fillText(i+1,x+4,12);}}}
+  else for(let b=Math.max(0,b0);b<=b1;b++){if(b%4)continue;const x=X(b);cx.strokeStyle='rgba(239,230,220,.3)';cx.lineWidth=1.5;cx.beginPath();cx.moveTo(x,top-6);cx.lineTo(x,bot+6);cx.stroke();
+    cx.fillStyle='rgba(188,176,164,.7)';cx.font='700 11px JetBrains Mono';cx.fillText(b/4+1,x+4,12);}
+  // ---- Rhythmus-Raster: Schläge und Achtel, Zählzeiten „1 + 2 + …“, aktueller Schlag leuchtet ----
+  const barStarts=src==='song'&&song?song.bars:null;
+  const barOf=b=>{if(!barStarts)return Math.floor(b/4)*4;let lo=0,hi=barStarts.length-1;if(b<barStarts[0])return barStarts[0];while(lo<hi){const m=(lo+hi+1)>>1;if(barStarts[m]<=b)lo=m;else hi=m-1;}return barStarts[lo];};
+  const nextBar=bs=>{if(!barStarts)return bs+4;const i=barStarts.indexOf(bs);return i>=0&&i+1<barStarts.length?barStarts[i+1]:bs+4;};
+  const nowB=mode==='tempo'&&running?curBeat():null;
+  cx.textAlign='center';cx.textBaseline='middle';
+  for(let bs=barOf(Math.max(0,b0));bs<=b1;bs=nextBar(bs)){const be=nextBar(bs);
+    for(let k=0;bs+k<be-.01;k+=.5){const bb=bs+k,x=X(bb);if(x<-20||x>W+20)continue;const whole=k%1===0;
+      if(k>0){cx.strokeStyle=whole?'rgba(239,230,220,.11)':'rgba(239,230,220,.045)';cx.lineWidth=1;cx.beginPath();cx.moveTo(x,top-6);cx.lineTo(x,bot+6);cx.stroke();}
+      const cur=nowB!==null&&nowB>=bb&&nowB<bb+.5;
+      if(whole&&nowB!==null&&nowB>=bb&&nowB<bb+1){const fr=nowB-bb;cx.fillStyle='rgba(242,165,65,'+(.06+.16*Math.max(0,1-fr*2.5))+')';cx.fillRect(x,top-8,ppb,bot-top+16);}
+      cx.fillStyle=cur?'#f2a541':whole?(k===0?'#f6efe7':'rgba(214,204,194,.85)'):'rgba(188,176,164,.5)';
+      cx.font=(whole?'800 ':'600 ')+(cur?'15px':'12px')+' JetBrains Mono';cx.fillText(whole?String(k+1):'+',x,H-(sm?7:9));}}
+  {const ys=bot+nh/2+(sm?3:6),ye=ys+(sm?11:18),vis=[];
+    for(let i=0;i<events.length;i++){const e=events[i],x=X(e.beat);if(x<-40||x>W+40)continue;vis.push(i);}
+    const kind=d=>{const c=[[4,'w'],[3,'h.'],[2,'h'],[1.5,'q.'],[1,'q'],[.75,'e.'],[2/3,'e3'],[.5,'e'],[1/3,'e3'],[.375,'s.'],[.25,'s']];let best=c[0],bd=9;for(const x of c){const dd=Math.abs(Math.log(d/x[0]));if(dd<bd){bd=dd;best=x;}}return best[1];};
+    cx.strokeStyle='rgba(236,228,218,.85)';cx.fillStyle='rgba(236,228,218,.85)';cx.lineWidth=1.6;
+    const beamed=new Set();
+    // Balken: aufeinanderfolgende Achtel/Sechzehntel innerhalb desselben Schlags verbinden
+    for(let a=0;a<vis.length;){const i=vis[a],e=events[i],kd=kind(e.dur);
+      if(kd[0]!=='e'&&kd[0]!=='s'){a++;continue;}
+      const beat=Math.floor(e.beat-barOf(e.beat)+1e-6),bs=barOf(e.beat);let z=a;
+      while(z+1<vis.length){const n=events[vis[z+1]],kn=kind(n.dur);if((kn[0]==='e'||kn[0]==='s')&&barOf(n.beat)===bs&&Math.floor(n.beat-bs+1e-6)===beat)z++;else break;}
+      if(z>a){const x1=X(events[vis[a]].beat),x2=X(events[vis[z]].beat);cx.fillRect(x1,ye-3,x2-x1,3.2);
+        for(let q=a;q<=z;q++){beamed.add(vis[q]);const kq=kind(events[vis[q]].dur);if(kq[0]==='s'){const xq=X(events[vis[q]].beat),xn=q<z?X(events[vis[q+1]].beat):xq-8;cx.fillRect(Math.min(xq,xn),ye-8,Math.abs(xn-xq)/(q<z?2:1)+1,2.6);}}
+        if(kind(events[vis[a]].dur)==='e3'){cx.font='700 10px JetBrains Mono';cx.fillText('3',(x1+x2)/2,ye+8);}}
+      a=z+1;}
+    for(const i of vis){const e=events[i],x=X(e.beat),kd=kind(e.dur);
+      if(kd==='w'){cx.beginPath();cx.ellipse(x,ys+9,5,3.5,0,0,7);cx.stroke();continue;}
+      cx.beginPath();cx.moveTo(x,ys);cx.lineTo(x,kd[0]==='h'?ys+10:ye);cx.stroke();
+      if(kd[0]==='h'){cx.beginPath();cx.ellipse(x,ys+14,4.5,3,-.4,0,7);cx.stroke();}
+      if((kd[0]==='e'||kd[0]==='s')&&!beamed.has(i)){cx.beginPath();cx.moveTo(x,ye);cx.quadraticCurveTo(x+7,ye-4,x+8,ye-10);cx.stroke();if(kd[0]==='s'){cx.beginPath();cx.moveTo(x,ye-5);cx.quadraticCurveTo(x+7,ye-9,x+8,ye-15);cx.stroke();}}
+      if(kd.endsWith('.')){cx.beginPath();cx.arc(x+6,ye-1,1.8,0,7);cx.fill();}}}
   for(let s=0;s<6;s++){cx.strokeStyle='rgba(238,228,216,'+(.5+s*.07)+')';cx.lineWidth=1.3+s*.45;cx.beginPath();cx.moveTo(0,Y(s));cx.lineTo(W,Y(s));cx.stroke();}
   const names=$('#names').checked;
   cx.textAlign='center';cx.textBaseline='middle';
@@ -1057,7 +1129,7 @@ function draw(){
     const gem=(n,yy)=>{
       let c=fing?FC[n.fg||0]:'#ece6de',tc=fing?FT[n.fg||0]:'#14110f';
       if(ev.state==='hit'){c='#3ddc84';tc='#04210f';}else if(ev.state==='miss'){c='#4d443d';tc='#ffb4b0';}else if(ev.state==='skip'||ev.state==='pass'){c='#3f3832';tc='#d6ccc2';}
-      if(mode==='tempo'&&ev.dur>.5&&n===ev){cx.fillStyle=c+'40';rr(cx,x,yy-5,ev.dur*ppb-8,10,5);cx.fill();}
+      if(ev.dur>=.45&&n===ev){cx.fillStyle=c+'55';rr(cx,x,yy-4,Math.max(0,ev.dur*ppb-6),8,4);cx.fill();}
       const w=n.f>9?nh*1.3:nh;
       if(cur){cx.shadowColor=c;cx.shadowBlur=24;}
       cx.fillStyle=c;rr(cx,x-w/2,yy-nh/2,w,nh,nh/2);cx.fill();cx.shadowBlur=0;
@@ -1069,7 +1141,7 @@ function draw(){
   }
   cx.fillStyle='#1d1916';cx.fillRect(0,0,28,H);cx.strokeStyle='#3a322b';cx.beginPath();cx.moveTo(28,0);cx.lineTo(28,H);cx.stroke();
   cx.fillStyle='#e6ddd3';cx.font='800 14px JetBrains Mono';for(let s=0;s<6;s++)cx.fillText(STR_NAMES[s],14,Y(s));
-  if(fing){cx.font='800 10px JetBrains Mono';for(let k=1;k<=4;k++){const lx=W-12-(4-k)*19,ly=H-11;cx.fillStyle=FC[k];cx.beginPath();cx.arc(lx,ly,7.5,0,7);cx.fill();cx.fillStyle=FT[k];cx.fillText(k,lx,ly+1);}}
+  if(fing){cx.font='800 10px JetBrains Mono';for(let k=1;k<=4;k++){const lx=W-12-(4-k)*19,ly=12;cx.fillStyle=FC[k];cx.beginPath();cx.arc(lx,ly,7.5,0,7);cx.fill();cx.fillStyle=FT[k];cx.fillText(k,lx,ly+1);}}
   cx.textAlign='left';cx.textBaseline='alphabetic';
   if(!running&&!finished&&events.length){cx.fillStyle='rgba(239,230,220,.6)';cx.font='500 13px Space Grotesk';
     let t=src==='coach'?(LEVELS[prof.level].name+(mode==='wait'?' · Lernrunde: spiel in Ruhe':' · im Tempo')):'Tippe auf Start';
