@@ -155,6 +155,24 @@ textarea{width:100%;min-height:160px;background:#151210;border:1px solid var(--l
 #ovRows{flex:1;overflow:auto;padding:8px 10px 20px;-webkit-overflow-scrolling:touch}
 .ovRow{display:block;width:100%;border-radius:12px;margin-bottom:8px;cursor:pointer}
 .rb{width:48px;height:48px}
+.srowI{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:9px 10px 9px 12px;margin-bottom:6px;cursor:pointer}
+.srowI .sMain{min-width:0;flex:1}
+.srowI b{display:block;font-weight:500;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.srowI small{display:block;color:var(--mute);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ring{width:38px;height:38px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+.ring span{width:30px;height:30px;border-radius:50%;background:var(--card);display:flex;align-items:center;justify-content:center;font:700 11px var(--mono);color:var(--text)}
+.fav{background:none;border:0;color:var(--mute);font-size:20px;padding:4px}
+.fav.on{color:#ffd21f}
+.srowI .x{margin-left:0;background:none;border:0;color:var(--mute);font-size:15px;padding:6px 2px 6px 4px}
+.srowI .x.c{color:var(--red);font-size:12px}
+#songTip{display:flex;gap:8px;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 -14px 10px;padding:0 14px;scrollbar-width:none}
+#songTip::-webkit-scrollbar{display:none}
+#songTip .tip{flex:0 0 84%;scroll-snap-align:start;margin-bottom:0;padding:11px 14px}
+#songTip .tip:only-child{flex-basis:100%}
+#songTip .tip small:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.goal{background:none;border:0;padding:0;margin-right:2px}
+.gr{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+.gr span{width:28px;height:28px;border-radius:50%;background:var(--bg);display:flex;align-items:center;justify-content:center;font:700 11px var(--mono);color:var(--text)}
 #err{color:var(--red);font-size:13px;margin:6px 0}
 #spark{width:100%;height:70px;display:block}
 
@@ -190,6 +208,7 @@ nav button.on{color:var(--amber)}
 <body>
 <div class="top">
   <h1>🎸 Gitarren<span>trainer</span></h1>
+  <button class="goal" id="goalChip" aria-label="Tagesziel"><span class="gr" id="goalRing"><span id="goalTxt">0</span></span></button>
   <button class="mic" id="micBtn"><span class="dot"></span><span id="micTxt">Mikro an</span></button>
 </div>
 <div id="banner"></div>
@@ -260,6 +279,7 @@ nav button.on{color:var(--amber)}
   <!-- Übungen -->
   <section class="view" id="vLib"><div class="pad">
     <div class="sec">Übungen</div>
+    <div class="yin" style="margin:0 0 8px"><input id="exQ" type="search" placeholder="🔍 Übung suchen (z. B. Legato, Pentatonik, Triolen)" autocapitalize="off" autocorrect="off"></div>
     <div class="cats" id="catBar"></div>
     <div id="libList"></div>
     <div class="sec">Eigene Tabs</div>
@@ -290,6 +310,12 @@ E|-----------------------------|</textarea>
       <input type="file" id="songFile" multiple style="display:none">
       <div id="songDesc" style="font-size:12px;color:var(--mute);margin-top:8px;line-height:1.45">„Aus Drive laden“ holt alle neuen Songs aus deinem Gitarren-Ordner in Google Drive. „Vom iPhone“ öffnet den Dateidialog. Guitar Pro (.gp, .gpx, .gp5, .gp4, .gp3) oder MusicXML. Die passende Gitarrenspur wird automatisch gewählt. Songs bleiben nur auf diesem Gerät.</div>
       <div id="songErr" style="color:var(--red);font-size:13px;margin-top:6px"></div>
+    </div>
+    <div id="songTools">
+      <div class="yin" style="margin:4px 0 8px"><input id="songQ" type="search" placeholder="🔍 Song oder Interpret suchen" autocapitalize="off" autocorrect="off">
+        <select id="songSort" style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px;font-size:14px">
+          <option value="last">Zuletzt geübt</option><option value="pct">Fortschritt</option><option value="diff">Schwierigkeit</option><option value="title">Titel A–Z</option><option value="artist">Interpret</option><option value="neu">Neu importiert</option></select></div>
+      <div class="cats" id="songFilt"></div>
     </div>
     <div id="songList"></div>
     <div id="songEmpty" style="font-size:14px;color:var(--mute);line-height:1.5;padding:4px 2px"></div>
@@ -329,6 +355,11 @@ E|-----------------------------|</textarea>
       <div class="kpi"><b id="kLvl">1</b><small>Level</small></div>
       <div class="kpi"><b id="kToday">0</b><small>Min. heute</small></div>
       <div class="kpi"><b id="kStreak">0</b><small>Tage in Folge</small></div>
+    </div>
+    <div class="card" style="margin-top:10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><span style="font-size:13px;color:var(--mute)">Übungszeit diese Woche</span>
+        <select id="goalSel" style="background:var(--card);border:1px solid var(--line);border-radius:8px;padding:4px 6px;font-size:13px"><option value="5">Ziel 5 Min./Tag</option><option value="10">Ziel 10 Min./Tag</option><option value="15">Ziel 15 Min./Tag</option><option value="20">Ziel 20 Min./Tag</option><option value="30">Ziel 30 Min./Tag</option><option value="45">Ziel 45 Min./Tag</option></select></div>
+      <canvas id="week" style="width:100%;height:110px;display:block"></canvas>
     </div>
     <div class="card" style="margin-top:10px">
       <div style="font-size:13px;color:var(--mute);margin-bottom:4px">Trefferquote der letzten Runden</div>
@@ -1043,7 +1074,21 @@ function finish(){
 // ---------- Übungszeit ----------
 const today=()=>{const d=new Date();return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate();};
 let saveAcc=0;
-function addTime(dt){prof.secs+=dt;const k=today();prof.days[k]=(prof.days[k]||0)+dt;saveAcc+=dt;if(saveAcc>10){saveAcc=0;save();}}
+function addTime(dt){prof.secs+=dt;const k=today();prof.days[k]=(prof.days[k]||0)+dt;saveAcc+=dt;if(saveAcc>10){saveAcc=0;save();updGoal();}}
+// Tagesziel (Übungsminuten) als Ring oben – wie Streaks/Tagesziel bei Yousician, Fender Play, Melodics
+const goalMin=()=>store.get('gt-goal',15);
+function updGoal(){const m=(prof.days[today()]||0)/60,g=goalMin(),p=Math.min(1,m/g),done=p>=1;
+  $('#goalRing').style.background='conic-gradient('+(done?'#3ddc84':'#f2a541')+' '+p*360+'deg,#2a241f 0)';
+  $('#goalTxt').textContent=done?'✓':Math.floor(m);$('#goalChip').title=Math.floor(m)+' von '+g+' Min. heute';}
+function drawWeek(){const c=$('#week');if(!c||!c.offsetParent)return;const x=c.getContext('2d'),r=fit(c,x),W=r.width,H=r.height;x.clearRect(0,0,W,H);
+  const g=goalMin(),days=[],d=new Date();for(let i=6;i>=0;i--){const t=new Date(d);t.setDate(d.getDate()-i);days.push({k:t.getFullYear()+'-'+(t.getMonth()+1)+'-'+t.getDate(),l:['So','Mo','Di','Mi','Do','Fr','Sa'][t.getDay()]});}
+  const vals=days.map(q=>(prof.days[q.k]||0)/60),mx=Math.max(g*1.3,...vals),bw=W/7,base=H-18,sc=(base-14)/mx;
+  x.strokeStyle='rgba(242,165,65,.6)';x.setLineDash([4,4]);x.beginPath();x.moveTo(0,base-g*sc);x.lineTo(W,base-g*sc);x.stroke();x.setLineDash([]);
+  x.textAlign='center';x.font='600 11px Space Grotesk';
+  days.forEach((q,i)=>{const v=vals[i],h=Math.max(2,v*sc),cx0=i*bw+bw*.2;x.fillStyle=v>=g?'#3ddc84':v>0?'#f2a541':'#2a241f';x.beginPath();x.roundRect?x.roundRect(cx0,base-h,bw*.6,h,4):x.rect(cx0,base-h,bw*.6,h);x.fill();
+    x.fillStyle=i===6?'#f6efe7':'#bcb0a4';x.fillText(q.l,i*bw+bw/2,H-4);if(v>=1){x.fillText(Math.round(v),i*bw+bw/2,base-h-5);}});}
+$('#goalChip').onclick=()=>show('me');
+$('#goalSel').value=String(goalMin());$('#goalSel').onchange=e=>{store.set('gt-goal',+e.target.value);updGoal();drawWeek();};
 function streak(){const d=new Date(),k=()=>d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate();
   if((prof.days[k()]||0)<60)d.setDate(d.getDate()-1);let n=0;while((prof.days[k()]||0)>=60&&n<3650){n++;d.setDate(d.getDate()-1);}return n;}
 
@@ -1282,6 +1327,7 @@ updCal();
 
 // Fortschritt
 function renderMe(){
+  updGoal();setTimeout(drawWeek,0);
   $('#kLvl').textContent=prof.level+1;$('#kToday').textContent=Math.round((prof.days[today()]||0)/60);$('#kStreak').textContent=streak();
   const sb=$('#strBars');sb.innerHTML='';
   for(let s=0;s<6;s++){let n=0,ok=0;for(const k in prof.notes){if(+k.split('-')[0]===s){const st=prof.notes[k];n+=st.n;ok+=st.n*(1-st.mr);}}
@@ -1309,12 +1355,15 @@ function renderLib(){
   for(const c of CATS){
     if(curCat!=='Alle'&&curCat!==c)continue;
     if(curCat==='Alle')lib.insertAdjacentHTML('beforeend','<div class="sec">'+c+'</div>');
-    EXERCISES.filter(e=>e.cat===c).forEach(ex=>{
+    const q=($('#exQ').value||'').trim().toLowerCase(),list=EXERCISES.filter(e=>e.cat===c&&(!q||(e.name+' '+e.sub+' '+e.cat).toLowerCase().includes(q)));
+    if(q&&!list.length){if(curCat==='Alle')lib.lastChild.remove();continue;}
+    list.forEach(ex=>{
       const n=parseSeq(ex.seq).length,b=document.createElement('button');b.className='item';
       b.innerHTML='<span class="ic">'+ex.ic+'</span><span><b>'+ex.name+'</b><small>'+ex.sub+' · '+n+' Töne · '+ex.bpm+' BPM</small></span><span class="ch">›</span>';
       b.onclick=()=>{curFree=ex;src='free';events=parseSeq(ex.seq);setBpm(ex.bpm);setMode(micOn?'wait':'tempo');reset();show('play');};lib.appendChild(b);});
   }}
 renderLib();
+$('#exQ').oninput=()=>{if($('#exQ').value&&curCat!=='Alle'){curCat='Alle';}renderLib();};
 $('#loadTab').onclick=()=>{
   store.set('gt-tab',$('#tabText').value);
   try{events=parseTab($('#tabText').value);$('#err').textContent='';curFree={name:'Eigene Tabs'};src='free';setBpm(70);setMode(micOn?'wait':'tempo');reset();show('play');}
@@ -1448,28 +1497,67 @@ function weakSpot(sg){const m=(sg.mt||{})[sg.ti??0]||[],has=[...new Set(sg.event
   return best&&bv<.9?{from:best[0],to:best[1],v:bv,spd:bv<.3?.5:bv<.7?.75:1}:null;}
 function practiceSpot(sg,sp){openSong(sg.id);$('#barFrom').value=sp.from+1;$('#barTo').value=sp.to+1;$('#spd').value=String(sp.spd);$('#songLoop').checked=true;
   setMode('tempo');applySong();}
+// ---------- Songs-Liste: Suche, Sortierung, Filter, Favoriten, Schwierigkeit ----------
+let sQuery='',sSort=store.get('gt-ssort','last'),sFilt=store.get('gt-sfilt','Alle');
+// Schwierigkeit 1–5 aus Notendichte, Lage, Akkorden, Techniken und Tempo
+function songDiff(sg){if(sg.diff&&sg.diffV===2)return sg.diff;const ev=sg.events;if(!ev.length)return 1;
+  const secs=(ev[ev.length-1].beat+ev[ev.length-1].dur-ev[0].beat)*60/sg.bpm||1,nps=ev.length/secs;
+  const avgF=ev.reduce((a,e)=>a+e.f,0)/ev.length,ch=ev.filter(e=>e.alts).length/ev.length,te=ev.filter(e=>e.tech).length/ev.length;
+  let jumps=0;for(let i=1;i<ev.length;i++)if(Math.abs(ev[i].f-ev[i-1].f)>4)jumps++;jumps/=ev.length;
+  const d=.6+nps*.45+(avgF>7?.6:avgF>4?.3:0)+ch*1.2+te*1.2+jumps*1.5;
+  sg.diff=Math.max(1,Math.min(5,Math.round(d)));sg.diffV=2;return sg.diff;}
+const stars=n=>'●'.repeat(n)+'○'.repeat(5-n);
+function songState(sg){const p=songMastery(sg).pct;return !sg.last&&!p?'Neu':p>=90?'Gemeistert':'In Arbeit';}
+function ring(p){const col=p>=90?'#3ddc84':p>=50?'#f2a541':p>0?'#ff5a5a':'#463d35';
+  return '<span class="ring" style="background:conic-gradient('+col+' '+p*3.6+'deg,#2a241f 0)"><span>'+p+'</span></span>';}
+function songRow(sg){
+  const b=document.createElement('div');b.className='srowI';const ms=songMastery(sg),d=songDiff(sg);
+  b.innerHTML=ring(ms.pct)+'<span class="sMain"><b></b><small></small></span><button class="fav" aria-label="Favorit">'+(sg.fav?'★':'☆')+'</button><button class="x" aria-label="Löschen">✕</button>';
+  b.querySelector('b').textContent=sg.title;
+  b.querySelector('small').textContent=(sg.artist?sg.artist+' · ':'')+stars(d)+' · '+ms.done+'/'+ms.total+' Takte'+(sg.yt?' · ▶':'')+(sg.tuningStd?'':' · ⚠ '+tuneName(sg.tuning));
+  b.onclick=()=>openSong(sg.id);
+  const f=b.querySelector('.fav');if(sg.fav)f.classList.add('on');f.onclick=ev=>{ev.stopPropagation();sg.fav=!sg.fav;saveSongs();renderSongs();};
+  const x=b.querySelector('.x');x.onclick=ev=>{ev.stopPropagation();
+    if(x.classList.contains('c')){songs=songs.filter(q=>q.id!==sg.id);saveSongs();idb.del(sg.id);renderSongs();}
+    else{x.classList.add('c');x.textContent='Löschen?';setTimeout(()=>{x.classList.remove('c');x.textContent='✕';},3000);}};
+  return b;}
+function tipCard(label,title,sub,go){const d=document.createElement('button');d.className='tip';d.style.cssText='width:100%;text-align:left;color:inherit;font:inherit';
+  d.innerHTML='<small></small><b></b><small></small>';d.querySelectorAll('small')[0].textContent=label;d.querySelector('b').textContent=title;d.querySelectorAll('small')[1].textContent=sub;d.onclick=go;return d;}
 function renderSongs(){
   const l=$('#songList');l.innerHTML='';
   $('#songDesc').style.display=songs.length?'none':'';
+  $('#songTools').style.display=songs.length>2?'':'none';
   $('#songEmpty').textContent=songs.length?'':'Noch keine Songs. Lege Guitar-Pro-Dateien in deinen Drive-Ordner und tippe oben auf „Aus Drive laden“.';
-  // Vorschlag: zuletzt gespielter Song, schwächste Stelle
-  const tip=$('#songTip');tip.innerHTML='';
+  // Vorschläge (max. 3): weiterüben, fast geschafft, neu passend zum Niveau
+  const tip=$('#songTip');tip.innerHTML='';const used=new Set();
   const last=songs.filter(q=>q.last).sort((a,b)=>b.last-a.last)[0];
-  if(last){const sp=weakSpot(last),ms=songMastery(last),d=document.createElement('button');d.className='tip';d.style.cssText='width:100%;text-align:left;color:inherit;font:inherit';
-    d.innerHTML='<small>WEITERÜBEN · '+ms.pct+' % beherrscht</small><b></b><small></small>';
-    d.querySelector('b').textContent=last.title;
-    d.querySelectorAll('small')[1].textContent=sp?'🎯 Takt '+(sp.from+1)+'–'+(sp.to+1)+' in Schleife bei '+Math.round(sp.spd*100)+' % – deine schwierigste Stelle':'Alles sitzt – spiel den ganzen Song im Originaltempo.';
-    d.onclick=()=>{if(sp)practiceSpot(last,sp);else{openSong(last.id);$('#spd').value='1';setMode('tempo');applySong();}};tip.appendChild(d);}
-  songs.forEach(sg=>{const b=document.createElement('div');b.className='item';b.style.cursor='pointer';
-    const ms=songMastery(sg),col=ms.pct>=90?'var(--green)':ms.pct>=50?'var(--amber)':ms.pct>0?'var(--red)':'var(--line)';
-    b.innerHTML='<span class="ic">🎵</span><span style="min-width:0;flex:1"><b></b><small></small><div class="mast"><div class="bar"><i style="width:'+ms.pct+'%;background:'+col+'"></i></div><b>'+ms.pct+' %</b></div></span><button class="x" aria-label="Löschen">✕</button>';
-    b.querySelector('b').textContent=sg.title+(sg.artist?' – '+sg.artist:'');
-    b.querySelector('small').textContent=sg.track+' · '+ms.done+'/'+ms.total+' Takte sicher · '+sg.bpm+' BPM'+(sg.yt?' · ▶ Video':'')+(sg.tuningStd?'':' · Stimmung '+tuneName(sg.tuning));
-    b.onclick=()=>openSong(sg.id);
-    const x=b.querySelector('.x');x.onclick=ev=>{ev.stopPropagation();
-      if(x.classList.contains('c')){songs=songs.filter(q=>q.id!==sg.id);saveSongs();idb.del(sg.id);renderSongs();}
-      else{x.classList.add('c');x.textContent='Löschen?';setTimeout(()=>{x.classList.remove('c');x.textContent='✕';},3000);}};
-    l.appendChild(b);});}
+  if(last){used.add(last.id);const sp=weakSpot(last),ms=songMastery(last);
+    tip.appendChild(tipCard('WEITERÜBEN · '+ms.pct+' %',last.title,sp?'🎯 Takt '+(sp.from+1)+'–'+(sp.to+1)+' in Schleife bei '+Math.round(sp.spd*100)+' % – deine schwierigste Stelle':'Alles sitzt – spiel den ganzen Song im Originaltempo.',
+      ()=>{if(sp)practiceSpot(last,sp);else{openSong(last.id);$('#spd').value='1';setMode('tempo');applySong();}}));}
+  const near=songs.filter(q=>!used.has(q.id)).map(q=>[q,songMastery(q).pct]).filter(x=>x[1]>=60&&x[1]<90).sort((a,b)=>b[1]-a[1])[0];
+  if(near){used.add(near[0].id);const sp=weakSpot(near[0]);tip.appendChild(tipCard('FAST GESCHAFFT · '+near[1]+' %',near[0].title,sp?'Nur noch Takt '+(sp.from+1)+'–'+(sp.to+1)+' festigen':'Einmal sauber durchspielen',()=>{if(sp)practiceSpot(near[0],sp);else openSong(near[0].id);}));}
+  const played=songs.filter(q=>q.last);const lvl=played.length?played.reduce((a,q)=>a+songDiff(q),0)/played.length:2;
+  const fresh=songs.filter(q=>!used.has(q.id)&&songState(q)==='Neu').sort((a,b)=>Math.abs(songDiff(a)-lvl-.3)-Math.abs(songDiff(b)-lvl-.3))[0];
+  if(fresh)tip.appendChild(tipCard('NEU FÜR DICH · '+stars(songDiff(fresh)),fresh.title,(fresh.artist?fresh.artist+' · ':'')+'passt zu deinem Niveau – erst im Warten-Modus lernen',()=>openSong(fresh.id)));
+  // Filter-Chips mit Anzahl
+  const F=['Alle','★ Favoriten','Neu','In Arbeit','Gemeistert'],test=(q,f)=>f==='Alle'||(f==='★ Favoriten'?q.fav:songState(q)===f);
+  const fb=$('#songFilt');fb.innerHTML='';
+  F.forEach(f=>{const n=songs.filter(q=>test(q,f)).length;if(!n&&f!=='Alle'&&f!==sFilt)return;const c=document.createElement('button');c.className='chip'+(f===sFilt?' on':'');c.textContent=f+' '+n;c.onclick=()=>{sFilt=f;store.set('gt-sfilt',f);renderSongs();};fb.appendChild(c);});
+  // Suchen, filtern, sortieren
+  const q=sQuery.trim().toLowerCase();
+  let list=songs.filter(s=>test(s,sFilt)&&(!q||(s.title+' '+s.artist+' '+s.track).toLowerCase().includes(q)));
+  const by={last:(a,b)=>(b.last||0)-(a.last||0)||b.id-a.id,pct:(a,b)=>songMastery(b).pct-songMastery(a).pct,diff:(a,b)=>songDiff(a)-songDiff(b),
+    title:(a,b)=>a.title.localeCompare(b.title,'de'),artist:(a,b)=>(a.artist||'~').localeCompare(b.artist||'~','de')||a.title.localeCompare(b.title,'de'),neu:(a,b)=>b.id-a.id};
+  list.sort(by[sSort]||by.last);
+  if(!list.length&&songs.length)l.innerHTML='<div style="color:var(--mute);font-size:14px;padding:8px 2px">Keine Treffer.</div>';
+  let grp=null;
+  for(const sg of list){
+    if(sSort==='artist'){const g=sg.artist||'Ohne Interpret';if(g!==grp){grp=g;l.insertAdjacentHTML('beforeend','<div class="sec" style="margin-top:12px"></div>');l.lastChild.textContent=g;}}
+    if(sSort==='diff'){const g=stars(songDiff(sg));if(g!==grp){grp=g;l.insertAdjacentHTML('beforeend','<div class="sec" style="margin-top:12px"></div>');l.lastChild.textContent='Schwierigkeit '+g;}}
+    l.appendChild(songRow(sg));}
+  saveSongs();}
+$('#songQ').oninput=e=>{sQuery=e.target.value;renderSongs();};
+$('#songSort').value=sSort;$('#songSort').onchange=e=>{sSort=e.target.value;store.set('gt-ssort',sSort);renderSongs();};
 function songEvents(){return song.events.filter(e=>e.bar>=songFrom&&e.bar<=songTo).map(e=>({...e,state:'pending',wrong:0,rt:0}));}
 function applySong(){
   songFrom=Math.max(0,Math.min(song.bars.length-1,(+$('#barFrom').value||1)-1));
@@ -1559,7 +1647,7 @@ let unlocked=false;
 let autoMic=false;
 ['touchend','click'].forEach(ev=>document.addEventListener(ev,e=>{try{ensureAC();if(!autoMic){autoMic=true;if(!micOn&&store.get('gt-mic',0)&&!(e.target.closest&&e.target.closest('#micBtn')))toggleMic();}if(!unlocked){unlocked=true;const b=ac.createBuffer(1,1,22050),s=ac.createBufferSource();s.buffer=b;s.connect(ac.destination);s.start();}}catch(e){}},{passive:true}));
 
-newCoachRound();
+newCoachRound();updGoal();
 requestAnimationFrame(tick);
 })();
 </script>
