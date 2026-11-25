@@ -383,7 +383,9 @@ E|-----------------------------|</textarea>
       <label class="set"><div>Notennamen über den Tabs</div><span class="sw"><input type="checkbox" id="names" checked><span></span></span></label>
       <label class="set"><div>Metronom im Tempo-Modus</div><span class="sw"><input type="checkbox" id="metro" checked><span></span></span></label>
       <label class="set"><div>Ton automatisch vorspielen<small>Vor jedem Ton im Warten-Modus</small></div><span class="sw"><input type="checkbox" id="autoPlay"><span></span></span></label>
-      <div class="set"><div>Mikrofon-Empfindlichkeit<small>Passt sich automatisch an den Raum an. Weiter links = reagiert auf noch leisere Töne</small></div><input type="range" id="sens" min="12" max="40" value="15" style="max-width:140px"></div>
+      <div class="set" style="flex-wrap:wrap"><div>Mikrofon<small id="micNow">Mikro aus</small></div><select id="micSel" style="max-width:190px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px;font-size:13px"><option value="auto">Automatisch (iPhone-Mikro bevorzugt)</option></select></div>
+      <div class="set"><div>Verzögerung ausgleichen<small>Bluetooth-Mikros hören ca. 150–250 ms später. Wird je Mikro gespeichert.</small></div><span style="display:flex;align-items:center;gap:6px"><input type="range" id="latR" min="0" max="400" step="10" value="0" style="max-width:110px"><b id="latV" style="font-family:var(--mono);font-size:12px;min-width:48px">0 ms</b></span></div>
+      <div class="set"><div>Mikrofon-Empfindlichkeit<small>Je Mikro gespeichert. Passt sich automatisch an den Raum an. Weiter links = reagiert auf noch leisere Töne</small></div><input type="range" id="sens" min="12" max="40" value="15" style="max-width:140px"></div>
       <div class="set"><div>Zoom der Tabs</div><input type="range" id="zoom" min="60" max="200" value="115" style="max-width:140px"></div>
     </div>
     <div class="card" style="font-size:13px;color:var(--mute);line-height:1.5">
@@ -721,26 +723,48 @@ function pluck(midi){
   for(let i=0;i<N;i++)ring[i]=Math.random()*2-1;
   let p=0;for(let i=0;i<len;i++){const nx=(p+1)%N,v=ring[p];ring[p]=.4985*(ring[p]+ring[nx]);d[i]=v*.6;p=nx;}
   const s=ac.createBufferSource(),g=ac.createGain();g.gain.value=.9;s.buffer=b;s.connect(g).connect(ac.destination);s.start();}
+// ---------- Mikrofon: automatische Erkennung (iPhone / Bluetooth-Kopfhörer) mit eigenem Profil je Mikro ----------
+// Bluetooth-Kopfhörer liefern ihr Mikro über das Telefonie-Profil: schmalbandig, sprachoptimiert und ca. 150–250 ms verzögert.
+// Deshalb: iPhone-Mikro bevorzugen (wenn „Automatisch“), sonst Empfindlichkeit und Verzögerung je Mikro getrennt merken.
+const BTRX=/airpods|bluetooth|beats|buds|headset|kopfh|hands-?free|bose|sony|jabra|wh-|wf-|powerbeats|galaxy buds|pixel buds/i;
+const INTRX=/iphone|ipad|integriert|built-?in|eingebaut|internal|intern|default|standard|mikrofon$/i;
+let micInfo={label:'',bt:false,sr:0,id:''},micLat=0;
+const micProfs=()=>store.get('gt-micprof',{});
+const micKey=()=>micInfo.bt?'bt:'+micInfo.label:'int';
+function loadMicProf(){const p=micProfs()[micKey()]||{};$('#sens').value=p.sens||(micInfo.bt?20:15);micLat=p.lat!=null?p.lat:(micInfo.bt?180:0);$('#latR').value=micLat;$('#latV').textContent=micLat+' ms';}
+function saveMicProf(){const all=micProfs();all[micKey()]={sens:+$('#sens').value,lat:micLat};store.set('gt-micprof',all);}
+async function openStream(devId){
+  const c={echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1};if(devId)c.deviceId={exact:devId};
+  try{return await navigator.mediaDevices.getUserMedia({audio:c});}catch(e){if(devId){delete c.deviceId;return await navigator.mediaDevices.getUserMedia({audio:c});}throw e;}}
+async function listInputs(){try{return (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput');}catch(e){return [];}}
+function describe(tr){const ts=tr&&tr.getSettings?tr.getSettings():{},label=(tr&&tr.label)||'';
+  return {label,id:ts.deviceId||'',sr:ts.sampleRate||0,bt:BTRX.test(label)||(!!ts.sampleRate&&ts.sampleRate<=24000&&!INTRX.test(label))};}
+async function startMic(){
+  try{if(navigator.audioSession)navigator.audioSession.type='play-and-record';}catch(e){}
+  ensureAC();
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('nomedia');
+  const pref=store.get('gt-micpref','auto');
+  stream=await openStream(pref!=='auto'?pref:null);
+  let info=describe(stream.getAudioTracks()[0]);
+  // Automatisch: läuft gerade das Kopfhörer-Mikro, auf das iPhone-Mikro umschalten (besser für Gitarre)
+  if(pref==='auto'&&info.bt){const ins=await listInputs(),int=ins.find(d=>d.deviceId!==info.id&&!BTRX.test(d.label)&&d.label);
+    if(int){stream.getTracks().forEach(t=>t.stop());stream=await openStream(int.deviceId);info=describe(stream.getAudioTracks()[0]);}}
+  micInfo=info;
+  const AC=window.AudioContext||window.webkitAudioContext;
+  try{if(ac)ac.close();}catch(e){}
+  try{ac=info.sr?new AC({sampleRate:info.sr}):new AC();}catch(e){ac=new AC();}
+  try{ac.resume();}catch(e){}
+  const s=ac.createMediaStreamSource(stream);analyser=ac.createAnalyser();analyser.fftSize=4096;buf=new Float32Array(4096);
+  const mute=ac.createGain();mute.gain.value=0;
+  s.connect(analyser);analyser.connect(mute).connect(ac.destination);setupSpec(s,mute);
+  D=ac.sampleRate>30000?2:1;ds=new Float32Array(4096/D);floorRms=.003;micOn=true;store.set('gt-mic',1);$('#banner').style.display='none';
+  loadMicProf();fillMicSel();
+  if(micInfo.bt){const b=$('#banner');b.style.display='block';b.innerHTML='<b>🎧 Kopfhörer-Mikro aktiv:</b> '+(micInfo.label||'Bluetooth')+'. Eigene Empfindlichkeit und '+micLat+' ms Verzögerungsausgleich sind eingestellt. Für die Gitarre ist meist das iPhone-Mikro genauer – umstellen unter Fortschritt → Einstellungen → Mikrofon.';setTimeout(()=>{if(micInfo.bt)b.style.display='none';},9000);}
+}
 async function toggleMic(){
   if(micOn){stream&&stream.getTracks().forEach(t=>t.stop());micOn=false;store.set('gt-mic',0);updMic();return;}
-  try{
-    // iOS: Ausgabe über Lautsprecher statt Hörmuschel, solange das Mikro läuft
-    try{if(navigator.audioSession)navigator.audioSession.type='play-and-record';}catch(e){}
-    ensureAC();
-    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('nomedia');
-    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1}});
-    // AudioContext mit derselben Abtastrate wie das Mikro neu anlegen – sonst kann iOS die Tonhöhe verfälschen
-    const tr=stream.getAudioTracks()[0],ts=tr&&tr.getSettings?tr.getSettings():{};
-    const AC=window.AudioContext||window.webkitAudioContext;
-    try{if(ac)ac.close();}catch(e){}
-    try{ac=ts.sampleRate?new AC({sampleRate:ts.sampleRate}):new AC();}catch(e){ac=new AC();}
-    try{ac.resume();}catch(e){}
-    const s=ac.createMediaStreamSource(stream);analyser=ac.createAnalyser();analyser.fftSize=4096;buf=new Float32Array(4096);
-    const mute=ac.createGain();mute.gain.value=0;
-    s.connect(analyser);analyser.connect(mute).connect(ac.destination);setupSpec(s,mute);
-    D=ac.sampleRate>30000?2:1;ds=new Float32Array(4096/D);floorRms=.003;micOn=true;store.set('gt-mic',1);$('#banner').style.display='none';
-    if(src==='coach'&&!running)newCoachRound();
-  }catch(e){
+  try{await startMic();if(src==='coach'&&!running)newCoachRound();}
+  catch(e){
     micOn=false;const b=$('#banner');b.style.display='block';
     const insecure=!window.isSecureContext;
     b.innerHTML='<b>🎤 Kein Mikrofonzugriff.</b> '+(insecure
@@ -749,7 +773,14 @@ async function toggleMic(){
       +' Ohne Mikro kannst du trotzdem im Tempo mitspielen und am Ende selbst bewerten.';
   }
   updMic();}
-function updMic(){$('#micBtn').classList.toggle('on',micOn);$('#micTxt').textContent=micOn?'Hört zu':'Mikro an';}
+async function restartMic(){if(!micOn)return;try{stream&&stream.getTracks().forEach(t=>t.stop());await startMic();}catch(e){micOn=false;}updMic();}
+// Kopfhörer verbunden/getrennt → Mikro automatisch neu wählen
+try{navigator.mediaDevices&&navigator.mediaDevices.addEventListener('devicechange',()=>{clearTimeout(restartMic.t);restartMic.t=setTimeout(restartMic,700);});}catch(e){}
+async function fillMicSel(){const sel=$('#micSel');if(!sel)return;const pref=store.get('gt-micpref','auto'),ins=await listInputs();
+  sel.innerHTML='<option value="auto">Automatisch (iPhone-Mikro bevorzugt)</option>'+ins.filter(d=>d.label).map(d=>'<option value="'+d.deviceId+'">'+(BTRX.test(d.label)?'🎧 ':'🎤 ')+d.label.replace(/[<>&"]/g,'')+'</option>').join('');
+  sel.value=[...sel.options].some(o=>o.value===pref)?pref:'auto';
+  $('#micNow').textContent=micOn?(micInfo.bt?'🎧 ':'🎤 ')+(micInfo.label||'Mikrofon')+(micInfo.sr?' · '+Math.round(micInfo.sr/1000)+' kHz':''):'Mikro aus';}
+function updMic(){$('#micBtn').classList.toggle('on',micOn);$('#micTxt').textContent=micOn?(micInfo.bt?'🎧 Hört zu':'Hört zu'):'Mikro an';}
 async function keepAwake(on){
   try{if(on&&!wake&&navigator.wakeLock){wake=await navigator.wakeLock.request('screen');wake.addEventListener('release',()=>wake=null);}
       else if(!on&&wake){await wake.release();wake=null;}}catch(e){}}
@@ -811,8 +842,8 @@ function listen(){
 // Zusätzlich weiß die App aus dem Tab, welcher Ton als Nächstes kommt, und prüft gezielt dessen Obertonmuster
 // (eigene, niedrigere Schwelle), und sie erkennt auch leise Anschläge, bei denen nur der erwartete Ton ansteigt.
 let an2=null,spec=null,nb=0,binHz=1,lowBin=1,sring=[],fluxH=[],lastOn=-1e9,pend=null,onQ=[],onLog=[],noiseSpec=null,noiseN=0,lastExpOn=-1e9,specStart=0;
-function setupSpec(srcNode,sink){an2=ac.createAnalyser();an2.fftSize=8192;an2.smoothingTimeConstant=0;srcNode.connect(an2);an2.connect(sink);
-  binHz=ac.sampleRate/8192;nb=Math.min(an2.frequencyBinCount,Math.ceil(5200/binHz));lowBin=Math.floor(70/binHz);spec=new Float32Array(an2.frequencyBinCount);sring=[];fluxH=[];pend=null;onQ=[];noiseSpec=null;noiseN=0;specStart=performance.now();}
+function setupSpec(srcNode,sink){an2=ac.createAnalyser();const N2=ac.sampleRate>=32000?8192:4096;an2.fftSize=N2;an2.smoothingTimeConstant=0;srcNode.connect(an2);an2.connect(sink);
+  binHz=ac.sampleRate/N2;nb=Math.min(an2.frequencyBinCount,Math.ceil(5200/binHz));lowBin=Math.floor(70/binHz);spec=new Float32Array(an2.frequencyBinCount);sring=[];fluxH=[];pend=null;onQ=[];noiseSpec=null;noiseN=0;specStart=performance.now();}
 function pk(D,f){const lo=Math.max(1,Math.floor(f*.983/binHz)),hi=Math.min(nb-1,Math.ceil(f*1.017/binHz));let m=0;for(let i=lo;i<=hi;i++)if(D[i]>m)m=D[i];return m;}
 const HW=[1,.9,.8,.7,.6,.5,.45,.4];
 // Grundton-Gewicht je Saite: tiefe Saiten haben am Handy-Mikro kaum Grundton
@@ -847,7 +878,7 @@ function specStep(now){
   const srt=[...fluxH].sort((a,b)=>a-b),med=srt[srt.length>>1]||0;
   const on=!warm&&ref&&rel>Math.max(med*2.2,.05)&&rms>thr()*.6&&now-lastOn>110;
   if(on){lastOn=now;lastOnsetT=now;lastOnsetBeat=curBeat();onsetFlag=true;
-    pend={t:now,beat:curBeat(),pre:sring[Math.max(0,sring.length-5)].m,n:0,acc:new Float32Array(nb)};}
+    pend={t:now-micLat,beat:curBeat()-micLat/1000*bpm/60,pre:sring[Math.max(0,sring.length-5)].m,n:0,acc:new Float32Array(nb)};}
   const exp=expTargets();
   // Stufe 2: leiser Anschlag ohne deutlichen Gesamt-Zuwachs – der ERWARTETE Ton steigt aber klar an
   if(!warm&&!pend&&noiseN>20&&exp.length&&sring.length>=8&&now-lastOn>250&&now-lastExpOn>250){
@@ -858,7 +889,7 @@ function specStep(now){
       const f=fOf(t.m);let up=0;for(let h=1;h<=4;h++){const fh=h*f*Math.sqrt(1+.00008*h*h);const x=pk(cur,fh),y=pk(old,fh),z=pk(noiseSpec,fh);if(x>y*1.6&&x>z*5)up++;}
       const a=tmpl(cur,t.m,t.s),b=tmpl(old,t.m,t.s),nz=tmpl(noiseSpec,t.m,t.s);
       if(up>=2&&a>b*1.9&&a>nz*5){lastExpOn=now;lastOn=now;lastOnsetT=now;lastOnsetBeat=curBeat();
-        const r={t:now-60,beat:curBeat(),notes:[t.m],exp:[t.m],top:t.m,soft:true};onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();break;}}}
+        const r={t:now-60-micLat,beat:curBeat()-(60+micLat)/1000*bpm/60,notes:[t.m],exp:[t.m],top:t.m,soft:true};onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();break;}}}
   if(pend){pend.n++;
     // Zuwachs gegenüber vor dem Anschlag aufsummieren (Frames 3–9 ≈ 50–150 ms)
     if(pend.n>=3)for(let i=0;i<nb;i++){const d=cur[i]-pend.pre[i];if(d>0)pend.acc[i]+=d;}
@@ -1327,9 +1358,12 @@ $('#a4m').onclick=()=>{cal.a4=Math.max(430,cal.a4-1);store.set('gt-cal',cal);upd
 $('#a4p').onclick=()=>{cal.a4=Math.min(450,cal.a4+1);store.set('gt-cal',cal);updCal();};
 updCal();
 
+$('#micSel').onchange=e=>{store.set('gt-micpref',e.target.value);restartMic();};
+$('#latR').oninput=e=>{micLat=+e.target.value;$('#latV').textContent=micLat+' ms';saveMicProf();};
+$('#sens').addEventListener('change',saveMicProf);
 // Fortschritt
 function renderMe(){
-  updGoal();setTimeout(drawWeek,0);
+  fillMicSel();updGoal();setTimeout(drawWeek,0);
   $('#kLvl').textContent=prof.level+1;$('#kToday').textContent=Math.round((prof.days[today()]||0)/60);$('#kStreak').textContent=streak();
   const sb=$('#strBars');sb.innerHTML='';
   for(let s=0;s<6;s++){let n=0,ok=0;for(const k in prof.notes){if(+k.split('-')[0]===s){const st=prof.notes[k];n+=st.n;ok+=st.n*(1-st.mr);}}
