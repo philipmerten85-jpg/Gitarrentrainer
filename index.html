@@ -752,11 +752,14 @@ async function startMic(){
   ensureAC();
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('nomedia');
   const pref=store.get('gt-micpref','auto');
-  stream=await openStream(pref!=='auto'?pref:null);
+  stream=await openStream(pref!=='auto'&&pref!=='bt'?pref:null);
   let info=describe(stream.getAudioTracks()[0]);
   // Automatisch: läuft gerade das Kopfhörer-Mikro, auf das iPhone-Mikro umschalten (besser für Gitarre)
   if(pref==='auto'&&info.bt){const ins=await listInputs(),int=ins.find(d=>d.deviceId!==info.id&&!BTRX.test(d.label)&&d.label);
     if(int){stream.getTracks().forEach(t=>t.stop());stream=await openStream(int.deviceId);info=describe(stream.getAudioTracks()[0]);}}
+  // Kopfhörer bevorzugt: wenn ein Bluetooth-Mikro da ist, dieses nehmen (sonst iPhone)
+  if(pref==='bt'&&!info.bt){const ins=await listInputs(),bt=ins.find(d=>BTRX.test(d.label));
+    if(bt){stream.getTracks().forEach(t=>t.stop());stream=await openStream(bt.deviceId);info=describe(stream.getAudioTracks()[0]);if(!info.bt&&BTRX.test(bt.label))info.bt=true,info.label=info.label||bt.label;}}
   micInfo=info;
   const AC=window.AudioContext||window.webkitAudioContext;
   try{if(ac)ac.close();}catch(e){}
@@ -785,7 +788,7 @@ async function restartMic(){if(!micOn)return;try{stream&&stream.getTracks().forE
 // Kopfhörer verbunden/getrennt → Mikro automatisch neu wählen
 try{navigator.mediaDevices&&navigator.mediaDevices.addEventListener('devicechange',()=>{clearTimeout(restartMic.t);restartMic.t=setTimeout(restartMic,700);});}catch(e){}
 async function fillMicSel(){const sel=$('#micSel');if(!sel)return;const pref=store.get('gt-micpref','auto'),ins=await listInputs();
-  sel.innerHTML='<option value="auto">Automatisch (iPhone-Mikro bevorzugt)</option>'+ins.filter(d=>d.label).map(d=>'<option value="'+d.deviceId+'">'+(BTRX.test(d.label)?'🎧 ':'🎤 ')+d.label.replace(/[<>&"]/g,'')+'</option>').join('');
+  sel.innerHTML='<option value="auto">Automatisch: iPhone-Mikro bevorzugt</option><option value="bt">Automatisch: Kopfhörer-Mikro bevorzugt</option>'+ins.filter(d=>d.label).map(d=>'<option value="'+d.deviceId+'">'+(BTRX.test(d.label)?'🎧 ':'🎤 ')+d.label.replace(/[<>&"]/g,'')+'</option>').join('');
   sel.value=[...sel.options].some(o=>o.value===pref)?pref:'auto';
   $('#micNow').textContent=micOn?(micInfo.bt?'🎧 ':'🎤 ')+(micInfo.label||'Mikrofon')+(micInfo.sr?' · '+Math.round(micInfo.sr/1000)+' kHz':''):'Mikro aus';}
 function updMic(){$('#micBtn').classList.toggle('on',micOn);$('#micTxt').textContent=micOn?(micInfo.bt?'🎧 Hört zu':'Hört zu'):'Mikro an';}
