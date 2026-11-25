@@ -375,6 +375,14 @@ E|-----------------------------|</textarea>
     <div class="sec">Level-Leiter <span style="text-transform:none;letter-spacing:0">– tippen, um ein Level direkt zu wählen</span></div>
     <div class="card ladder" id="ladder"></div>
 
+    <div class="sec">Analyse durch Claude</div>
+    <div class="card">
+      <div id="dgInfo" style="font-size:14px;line-height:1.5;margin-bottom:8px"></div>
+      <textarea id="dgNote" rows="2" placeholder="Optional: Was ist dir aufgefallen? z. B. „tiefe E-Saite wird oft nicht erkannt“" style="min-height:58px;white-space:normal;font-family:inherit;font-size:16px;margin-bottom:8px"></textarea>
+      <button class="btn pri" id="dgSend" style="width:100%">📤 Bericht an Claude senden</button>
+      <div id="dgMsg" style="font-size:13px;line-height:1.5;margin-top:8px"></div>
+    </div>
+
     <div class="sec">Einstellungen</div>
     <div class="card">
       <label class="set"><div>Oktave egal<small>Hilft bei Obertönen und dünnen Handy-Mikros</small></div><span class="sw"><input type="checkbox" id="octTol" checked><span></span></span></label>
@@ -813,7 +821,7 @@ function listen(){
   else{floorRms=Math.min(floorRms*1.0008,.02);
        if(!useOnset()&&rmsSlow>0&&rms>rmsSlow*1.5&&now-lastHitTime>140){onsetFlag=true;lastOnsetBeat=curBeat();lastOnsetT=now;}
        if(silent>2){lastOnsetBeat=curBeat();lastOnsetT=now;}silent=0;}
-  rmsSlow=rmsSlow*.85+rms*.15;
+  rmsSlow=rmsSlow*.85+rms*.15;if(running)dg.level();
   if(useOnset())specStep(now);
   if(rms<th){hist=[];rawF=[];stableMidi=null;tunBuf=[];return;}
   for(let i=0,k=0;k<ds.length;k++,i+=D){let v=0;for(let j=0;j<D;j++)v+=buf[i+j];ds[k]=v/D;}
@@ -828,7 +836,7 @@ function listen(){
   for(const v of L)if(v!==null){cnt[v]=(cnt[v]||0)+1;if(cnt[v]>=2)best=v;}
   const prev=stableMidi;
   stableMidi=best!==null?best:(stableMidi!==null&&hist[hist.length-1]===stableMidi?stableMidi:null);
-  if(stableMidi!==prev)tunBuf=[];
+  if(stableMidi!==prev){tunBuf=[];if(stableMidi!==null&&running)dg.pitch(stableMidi,cents);}
   // Stimmgerät: Anschlag (erste 150 ms, Ton noch zu hoch) ignorieren, dann Median bilden
   if(mf!==null&&stableMidi!==null&&Math.round(mf)===stableMidi&&now-lastOnsetT>150){
     tunBuf.push(mf-stableMidi);if(tunBuf.length>15)tunBuf.shift();
@@ -889,7 +897,7 @@ function specStep(now){
       const f=fOf(t.m);let up=0;for(let h=1;h<=4;h++){const fh=h*f*Math.sqrt(1+.00008*h*h);const x=pk(cur,fh),y=pk(old,fh),z=pk(noiseSpec,fh);if(x>y*1.6&&x>z*5)up++;}
       const a=tmpl(cur,t.m,t.s),b=tmpl(old,t.m,t.s),nz=tmpl(noiseSpec,t.m,t.s);
       if(up>=2&&a>b*1.9&&a>nz*5){lastExpOn=now;lastOn=now;lastOnsetT=now;lastOnsetBeat=curBeat();
-        const r={t:now-60-micLat,beat:curBeat()-(60+micLat)/1000*bpm/60,notes:[t.m],exp:[t.m],top:t.m,soft:true};onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();break;}}}
+        const r={t:now-60-micLat,beat:curBeat()-(60+micLat)/1000*bpm/60,notes:[t.m],exp:[t.m],top:t.m,soft:true};dg.on(r);onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();break;}}}
   if(pend){pend.n++;
     // Zuwachs gegenüber vor dem Anschlag aufsummieren (Frames 3–9 ≈ 50–150 ms)
     if(pend.n>=3)for(let i=0;i<nb;i++){const d=cur[i]-pend.pre[i];if(d>0)pend.acc[i]+=d;}
@@ -901,7 +909,7 @@ function specStep(now){
         for(let h=1;h<=10;h++){const fh=h*tf*Math.sqrt(1+.00008*h*h);const lo=Math.floor(fh*.983/binHz),hi=Math.ceil(fh*1.017/binHz);for(let i=lo;i<=hi&&i<nb;i++)R[i]=0;}
         for(const t of exp){if(pc(t.m)===pc(win[0].m)){ex.push(t.m);continue;}const v=tmpl(R,t.m,t.s);if(v>=.3*mx)ex.push(t.m);}}
       const r={t:pend.t,beat:pend.beat,notes:win.map(x=>x.m),exp:ex,top:win.length?win[0].m:null};
-      onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();pend=null;}}
+      dg.on(r);onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();pend=null;}}
 }
 // Passt ein Anschlag zum Zielton (oder einem Ton des Akkords)?
 function onsetMatches(r,ev){if(!ev)return false;const tg=[ev,...(ev.alts||[])],oct=$('#octTol').checked;
@@ -930,6 +938,7 @@ function curBeat(){if(mode!=='tempo'||!running)return scrollBeat;
 function setBpm(v){bpm=Math.round(+v);$('#bpm').value=bpm;$('#bpmV').textContent=bpm+' BPM';}
 function setMode(m){mode=m;document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));}
 function reset(){
+  dg.flush('abbruch');
   events.forEach(e=>{e.state='pending';e.wrong=0;e.rt=0;});assignFingers(events);
   if(src!=='song')baseBeat=0;
   viewOff=0;dragV=0;
@@ -938,7 +947,7 @@ function reset(){
 function start(){
   ensureAC();
   if(finished){if(src==='coach')newCoachRound();else reset();}
-  if(!running){running=true;paused=false;keepAwake(true);
+  if(!running){running=true;paused=false;keepAwake(true);if(dg.logged)dg.begin();
     if(mode==='tempo'){t0=performance.now();lastClickBeat=Math.floor(baseBeat)-LEAD-1;
       if(ytActive()){try{yt.setPlaybackRate(songSpeed);yt.seekTo(Math.max(0,song.yt.off+baseBeat*60/song.bpm-2.5),true);yt.playVideo();vtLast=-1;}catch(e){}}}
     else{curStart=performance.now();if(events[idx]&&$('#autoPlay').checked)pluck(events[idx].midi);}
@@ -978,9 +987,9 @@ function tick(){
         while(onQ.length&&!done){const r=onQ.shift();if(r.t<=lastUsedOn)continue;
           // gleicher Ton nochmal: nur ein neuer Anschlag mit etwas Abstand zählt (kein Doppel-Auslöser)
           if(lastHitPc===pc(ev.midi)&&r.t-lastUsedOn<280)continue;
-          if(onsetMatches(r,ev)){lastUsedOn=r.t;aheadT=0;hitCurrent(false);done=true;}
+          if(onsetMatches(r,ev)){r.used=1;lastUsedOn=r.t;aheadT=0;hitCurrent(false);done=true;}
           // Ton ausgelassen? Erst nach zwei klaren Anschlägen auf die Folgetöne nachziehen
-          else if(aheadT&&onsetMatches(r,events[idx+2])){ev.state='miss';misses++;idx++;lastUsedOn=r.t;hitCurrent(false);hitCurrent(false);aheadT=0;done=true;}
+          else if(aheadT&&onsetMatches(r,events[idx+2])){r.used=1;ev.state='miss';misses++;idx++;lastUsedOn=r.t;hitCurrent(false);hitCurrent(false);aheadT=0;done=true;}
           else if(onsetMatches(r,events[idx+1])){aheadT=r.t;}
           else if(r.top!==null&&!ev.wrong&&!ev.tech&&!related(r.top,ev.midi)&&pc(r.top)!==pc(ev.midi)){ev.wrong=1;flash('bad');}}
         const ringing=recent.some(m=>pc(m)===pc(ev.midi));
@@ -1008,10 +1017,10 @@ function tick(){
         const wo=ev.beat-.45,wc=ev.beat+Math.min(.7,Math.max(.35,ev.dur*.85));
         if(b<wo)break;
         if(!micOn){if(b>ev.beat){ev.state='pass';idx=i+1;updHud();}continue;}
-        if(b<=wc){let ok=false;
-          if(useOnset()){const r=onLog.find(r=>!r.used&&r.beat>=wo-.1&&r.beat<=wc&&onsetMatches(r,ev));if(r){r.used=true;ok=true;}else if(ev.tech&&hitOK(ev))ok=true;}
+        if(b<=wc){let ok=false,hb=b;
+          if(useOnset()){const r=onLog.find(r=>!r.used&&r.beat>=wo-.1&&r.beat<=wc&&onsetMatches(r,ev));if(r){r.used=true;ok=true;hb=r.beat;}else if(ev.tech&&hitOK(ev))ok=true;}
           else{const pv=events[i-1],fresh=lastOnsetBeat>=wo||!pv||pc(pv.midi)!==pc(ev.midi)||ev.tech;ok=hitOK(ev)&&fresh;}
-          if(ok){ev.state='hit';hits++;idx=i+1;flash('good');updHud();}}
+          if(ok){ev.state='hit';ev.hb=hb;hits++;idx=i+1;flash('good');updHud();}}
         else{ev.state='miss';misses++;idx=i+1;flash('bad');updHud();}
       }
       const last=events[events.length-1];if(!last||b>last.beat+last.dur+1)finish();
@@ -1071,6 +1080,7 @@ function selfRate(r){
     else if(prof.level>0){prof.level--;prof.phase='learn';prof.bpm=LEVELS[prof.level].bpm[0];}}
   save();newCoachRound();start();}
 function finish(){
+  dg.flush('fertig');
   if(src==='song'&&ytActive())try{yt.pauseVideo();}catch(e){}
   const sr=src==='song'?recordSongRun():null;
   if(src==='song'&&$('#songLoop').checked){reset();start();return;}
@@ -1101,7 +1111,94 @@ function finish(){
       if(songFrom>0||songTo<song.bars.length-1)add('Ganzer Song',()=>{$('#barFrom').value=1;$('#barTo').value=song.bars.length;$('#songLoop').checked=false;applySong();start();});
     }
   }
+  if(micOn){const fb=document.createElement('button');fb.className='chip';fb.textContent='⚑ Erkennung falsch';fb.onclick=()=>{if(dgFlag()){fb.textContent='⚑ Markiert';fb.disabled=true;}};btns.appendChild(fb);}
   $('#sheet').classList.add('on');updHud();renderMe();}
+
+// ---------- Diagnose-Protokoll für Claude ----------
+// Sammelt pro Durchgang: was erwartet war, was das Mikro gehört hat, Treffer/Fehler/Timing.
+// Bleibt auf dem Gerät, bis „Bericht an Claude senden“ getippt wird – dann ein Upload nach Google Drive.
+const APPV='2026-11-25a',DG_FOLDER='Gitarrentrainer-Berichte',DSCOPE='https://www.googleapis.com/auth/drive.file';
+const dg={buf:[],t0:0,logged:true,rmsN:0,rmsS:0,rmsMax:0,flMin:1,flMax:0,onN:0,softN:0,
+  begin(){this.buf=[];this.t0=performance.now();this.logged=false;this.rmsN=0;this.rmsS=0;this.rmsMax=0;this.flMin=1;this.flMax=0;this.onN=0;this.softN=0;this.w0=Date.now();},
+  live(){return running&&!paused&&!this.logged;},
+  on(r){if(!this.live())return;this.onN++;if(r.soft)this.softN++;if(this.buf.length<900)this.buf.push({k:'o',r});},
+  pitch(m,c){if(!this.live()||this.buf.length>=900)return;this.buf.push({k:'p',t:Math.round(performance.now()-this.t0),b:+curBeat().toFixed(2),m,c});},
+  level(){if(!this.live())return;this.rmsN++;this.rmsS+=rms;if(rms>this.rmsMax)this.rmsMax=rms;if(floorRms<this.flMin)this.flMin=floorRms;if(floorRms>this.flMax)this.flMax=floorRms;},
+  flush(end){
+    if(this.logged)return;this.logged=true;
+    const judged=events.filter(e=>e.state!=='pending').length;
+    if(!judged&&end!=='fertig')return;
+    const SC={hit:'h',miss:'m',skip:'s',pass:'p',pending:'.'},r4=x=>Math.round(x*1e4)/1e4;
+    const run={t:new Date(this.w0||Date.now()).toISOString(),dur:Math.round((performance.now()-this.t0)/1000),end,
+      src,title:($('#hudTitle').textContent||'').slice(0,80),mode,bpm:mode==='tempo'?bpm:null,speed:src==='song'?songSpeed:null,
+      lvl:prof.level,phase:prof.phase,mic:micOn,n:events.length,hits,misses,wrong:events.filter(e=>e.wrong).length,
+      set:{sens:+$('#sens').value,oct:$('#octTol').checked,simple:$('#simpleDet').checked},
+      audio:{mic:typeof micInfo!=='undefined'?{label:micInfo.label,bt:micInfo.bt,sr:micInfo.sr,lat:micLat}:null,sr:ac?ac.sampleRate:null,rmsAvg:this.rmsN?r4(this.rmsS/this.rmsN):null,rmsMax:r4(this.rmsMax),floorMin:r4(this.flMin),floorMax:r4(this.flMax),onsets:this.onN,soft:this.softN},
+      // ev: [Saite(0=hohe e),Bund,Ziel-MIDI,Takt-Schlag,Status,Fehlgriff,Reaktion s (Warten) bzw. Abweichung in Schlägen (Tempo),Technik]
+      ev:events.slice(0,600).map(e=>[e.s,e.f,e.midi,+e.beat.toFixed(2),SC[e.state]||e.state,e.wrong?1:0,
+        e.rt?+e.rt.toFixed(2):(e.hb!==undefined?+(e.hb-e.beat).toFixed(2):null),e.tech||0]),
+      // hd: gehörte Anschläge (o) und stabile Tonhöhen (p): [Art,ms seit Start,Schlag,Haupt-Ton,erkannte Töne/Cent,erwartete Töne,verwendet,leise]
+      hd:this.buf.map(x=>x.k==='o'?['o',Math.round(x.r.t-this.t0),+(+x.r.beat).toFixed(2),x.r.top,x.r.notes,x.r.exp||[],x.r.used?1:0,x.r.soft?1:0]
+                                   :['p',x.t,x.b,x.m,x.c])};
+    const all=store.get('gt-diag',[]);all.push(run);while(all.length>120)all.shift();
+    let ok=false;while(!ok&&all.length){try{localStorage.setItem('gt-diag',JSON.stringify(all));ok=true;}catch(e){all.splice(0,Math.ceil(all.length/2));}}
+    this.lastRun=run;}};
+function dgErr(m){try{const a=store.get('gt-diag-err',[]);a.push({t:new Date().toISOString(),m:String(m).slice(0,400)});while(a.length>40)a.shift();store.set('gt-diag-err',a);}catch(e){}}
+window.addEventListener('error',e=>dgErr((e.message||'Fehler')+' @'+(e.lineno||'?')+':'+(e.colno||'?')));
+window.addEventListener('unhandledrejection',e=>dgErr('Promise: '+((e.reason&&e.reason.message)||e.reason)));
+function dgFlag(){const all=store.get('gt-diag',[]);if(!all.length)return false;all[all.length-1].flag=1;store.set('gt-diag',all);return true;}
+function dgReport(){
+  const notes=Object.entries(prof.notes).filter(([k,v])=>v.n>=3).sort((a,b)=>b[1].mr-a[1].mr).slice(0,15).map(([k,v])=>({k,n:v.n,mr:+v.mr.toFixed(2),rt:+v.rt.toFixed(2)}));
+  return {app:'Gitarrentrainer',v:APPV,sent:new Date().toISOString(),note:($('#dgNote').value||'').trim(),
+    device:{ua:navigator.userAgent,w:innerWidth,h:innerHeight,dpr:devicePixelRatio,standalone:!!navigator.standalone||matchMedia('(display-mode: standalone)').matches},
+    cal:typeof cal!=='undefined'?cal:null,
+    profile:{level:prof.level,levelName:(LEVELS[prof.level]||{}).name,phase:prof.phase,bpm:prof.bpm,rounds:prof.rounds,mins:Math.round(prof.secs/60),weakNotes:notes,hist:prof.hist.slice(-40)},
+    songs:songs.map(sg=>({t:sg.title||sg.name,m:songMastery(sg).pct})).slice(0,200),
+    errors:store.get('gt-diag-err',[]),runs:store.get('gt-diag',[])};}
+function renderDiag(){
+  const all=store.get('gt-diag',[]),er=store.get('gt-diag-err',[]),last=store.get('gt-diag-sent',null);
+  const fl=all.filter(r=>r.flag).length,mins=Math.round(all.reduce((a,r)=>a+(r.dur||0),0)/60);
+  $('#dgInfo').innerHTML=(all.length?'<b>'+all.length+(all.length>1?' Durchgänge':' Durchgang')+'</b> gesammelt ('+mins+' Min.'+(fl?', '+fl+' markiert':'')+(er.length?', '+er.length+' App-Fehler':'')+').':'Noch nichts gesammelt – einfach üben, der Trainer schreibt im Hintergrund mit.')
+    +'<br><span style="color:var(--mute);font-size:13px">Erst beim Tippen auf den Knopf geht alles als ein Bericht in deinen Drive-Ordner „'+DG_FOLDER+'“. Claude wertet ihn aus und verbessert den Trainer.'+(last?' Zuletzt gesendet: '+new Date(last.t).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})+'.':'')+'</span>';
+  $('#dgSend').disabled=!all.length&&!er.length;$('#dgSend').style.opacity=$('#dgSend').disabled?.5:1;}
+let dTok=store.get('gt-dtok',null),dTokClient=null;
+function getDiagToken(){return new Promise((res,rej)=>{
+  if(dTok&&dTok.exp>Date.now()+60000)return res(dTok.t);
+  if(!window.google||!google.accounts||!google.accounts.oauth2){loadGIS().catch(()=>{});return rej(new Error('Google-Anmeldung lädt noch – bitte gleich nochmal tippen.'));}
+  dTokClient=google.accounts.oauth2.initTokenClient({client_id:GCLIENT,scope:DSCOPE,
+    callback:r=>{if(r&&r.access_token){dTok={t:r.access_token,exp:Date.now()+(+r.expires_in||3600)*1000};store.set('gt-dtok',dTok);store.set('gt-dconsent',1);res(dTok.t);}else rej(new Error('Anmeldung abgebrochen'));},
+    error_callback:e=>rej(new Error(e&&e.type==='popup_closed'?'Anmeldefenster geschlossen':'Anmeldung fehlgeschlagen'))});
+  dTokClient.requestAccessToken({prompt:store.get('gt-dconsent',0)?'':'consent'});});}
+async function dfetch(url,t,opt={}){const r=await fetch(url,{...opt,headers:{...(opt.headers||{}),Authorization:'Bearer '+t}});
+  if(r.status===401){dTok=null;store.set('gt-dtok',null);throw new Error('Google-Anmeldung abgelaufen – bitte nochmal tippen.');}
+  if(!r.ok){let j={};try{j=await r.json();}catch(e){}throw new Error('Google Drive antwortet mit Fehler '+r.status+((j.error&&j.error.message)?': '+j.error.message:''));}
+  return r.json();}
+async function dgFolder(t){
+  const id=store.get('gt-dgfold',null);
+  if(id){try{const f=await dfetch('https://www.googleapis.com/drive/v3/files/'+id+'?fields=id,trashed',t);if(!f.trashed)return id;}catch(e){}}
+  const q=encodeURIComponent("name='"+DG_FOLDER+"' and mimeType='application/vnd.google-apps.folder' and trashed=false");
+  const l=await dfetch('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=files(id)',t);
+  let fid=l.files&&l.files[0]&&l.files[0].id;
+  if(!fid){const f=await dfetch('https://www.googleapis.com/drive/v3/files?fields=id',t,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:DG_FOLDER,mimeType:'application/vnd.google-apps.folder'})});fid=f.id;}
+  store.set('gt-dgfold',fid);return fid;}
+function dgName(){const d=new Date(),z=n=>String(n).padStart(2,'0');return 'Gitarrentrainer-Bericht '+d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate())+' '+z(d.getHours())+'-'+z(d.getMinutes())+'.json';}
+function dgDone(n){localStorage.removeItem('gt-diag');localStorage.removeItem('gt-diag-err');store.set('gt-diag-sent',{t:Date.now(),n});$('#dgNote').value='';renderDiag();}
+async function dgSend(){
+  const btn=$('#dgSend'),msg=$('#dgMsg'),rep=dgReport(),body=JSON.stringify(rep),name=dgName(),n=rep.runs.length;
+  msg.textContent='';
+  try{
+    const t=await getDiagToken();btn.textContent='Sende …';
+    const fid=await dgFolder(t),B='gt'+Math.random().toString(36).slice(2);
+    const mp='--'+B+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+JSON.stringify({name,parents:[fid],mimeType:'application/json'})+'\r\n--'+B+'\r\nContent-Type: application/json\r\n\r\n'+body+'\r\n--'+B+'--';
+    await dfetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',t,{method:'POST',headers:{'Content-Type':'multipart/related; boundary='+B},body:mp});
+    btn.textContent='📤 Bericht an Claude senden';dgDone(n);
+    msg.innerHTML='<span style="color:var(--green)">✓ Gesendet ('+n+(n===1?' Durchgang':' Durchgänge')+'). Claude wertet den Bericht in der nächsten Nacht aus – oder sag im Chat „schau dir den Bericht an“.</span>';
+  }catch(x){btn.textContent='📤 Bericht an Claude senden';
+    msg.innerHTML='<span style="color:var(--red)">'+x.message+'</span><br><button class="chip" id="dgShare" style="margin-top:6px">Stattdessen als Datei teilen</button>';
+    $('#dgShare').onclick=async()=>{const f=new File([body],name,{type:'application/json'});
+      try{if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:name});dgDone(n);msg.innerHTML='<span style="color:var(--green)">✓ Geteilt. Leg die Datei in Drive in den Ordner „'+DG_FOLDER+'“.</span>';return;}}catch(e){if(e&&e.name==='AbortError')return;}
+      const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=name;document.body.appendChild(a);a.click();a.remove();};}}
+$('#dgSend').onclick=dgSend;
 
 // ---------- Übungszeit ----------
 const today=()=>{const d=new Date();return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate();};
@@ -1363,6 +1460,7 @@ $('#latR').oninput=e=>{micLat=+e.target.value;$('#latV').textContent=micLat+' ms
 $('#sens').addEventListener('change',saveMicProf);
 // Fortschritt
 function renderMe(){
+  renderDiag();loadGIS().catch(()=>{});
   fillMicSel();updGoal();setTimeout(drawWeek,0);
   $('#kLvl').textContent=prof.level+1;$('#kToday').textContent=Math.round((prof.days[today()]||0)/60);$('#kStreak').textContent=streak();
   const sb=$('#strBars');sb.innerHTML='';
