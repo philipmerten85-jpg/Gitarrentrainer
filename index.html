@@ -132,7 +132,7 @@ textarea{width:100%;min-height:160px;background:#151210;border:1px solid var(--l
 .songCtl input[type=number]{width:44px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px;font-size:16px}
 .songCtl select{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px;font-size:15px}
 .songCtl .chip{padding:7px 11px;font-size:13px}
-#ytWrap{display:none;width:100%;max-width:420px;margin:0 auto;aspect-ratio:16/9;max-height:19vh;border-radius:12px;overflow:hidden;background:#000}
+#ytWrap{display:none;width:100%;max-width:420px;margin:0 auto;aspect-ratio:16/9;max-height:17vh;border-radius:12px;overflow:hidden;background:#000}
 #ytWrap iframe,#ytBox{width:100%;height:100%;border:0;display:block}
 .yin{display:flex;gap:8px}.yin input{flex:1;min-width:0;background:#151210;border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:16px;-webkit-user-select:text;user-select:text}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:flex-end;justify-content:center;z-index:50;padding:0 0 var(--sb)}
@@ -253,14 +253,15 @@ nav button.on{color:var(--amber)}
       </div>
       <div class="r" id="ytRow">
         <select id="trk" style="max-width:130px"></select>
+        <button class="chip" id="simpBtn">✨ Leichter</button>
         <button class="chip" id="ytBtn">▶ YouTube</button>
-        <span id="ytSync" style="display:none;gap:6px;align-items:center;flex-wrap:wrap">
-          <b id="ytOff" style="font-family:var(--mono);color:var(--text)">0,0 s</b>
-          <button class="chip" id="ytM">−0,1</button><button class="chip" id="ytP">+0,1</button><button class="chip pri" id="ytNow">Jetzt = Takt 1</button>
-        </span>
+      </div>
+      <div class="r" id="ytSync" style="display:none">
+        <span>Video-Start</span><b id="ytOff" style="font-family:var(--mono);color:var(--text)">0,0 s</b>
+        <button class="chip" id="ytM">−0,1</button><button class="chip" id="ytP">+0,1</button><button class="chip pri" id="ytNow">Jetzt = Takt 1</button>
       </div>
       <div class="yin" id="ytIn" style="display:none"><input id="ytUrl" placeholder="YouTube-Link einfügen" autocapitalize="off" autocorrect="off"><button class="chip pri" id="ytOk">OK</button><a class="chip" id="ytSearch" target="_blank" rel="noopener" style="text-decoration:none">🔎</a><button class="chip" id="ytDel">✕</button></div>
-      <div id="songHint" style="font-size:11px;line-height:1.35"></div>
+      <div id="songHint" style="font-size:11px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
     </div>
     <div class="freeCtl" id="freeCtl">
       <div class="seg" id="modeSeg"><button data-m="wait" class="on">Warten</button><button data-m="tempo">Tempo</button></div>
@@ -1108,6 +1109,7 @@ function updHud(){
   $('#songCtl').classList.toggle('on',src==='song');
   const seg=$('#modeSeg'),slot=src==='song'?$('#songRow'):$('#freeCtl');if(seg.parentNode!==slot)slot.prepend(seg);
   $('#ytRow').style.display=$('#songHint').style.display=running&&!paused?'none':'flex';
+  if(running&&!paused){$('#ytIn').style.display='none';}if(typeof updYtUI==='function'&&src==='song')updYtUI();
   fv.style.display=src==='song'?'none':'';
   if(src!=='song'&&yt&&ytOK)try{yt.pauseVideo();}catch(e){}
   drawFret();}
@@ -1497,6 +1499,78 @@ function weakSpot(sg){const m=(sg.mt||{})[sg.ti??0]||[],has=[...new Set(sg.event
   return best&&bv<.9?{from:best[0],to:best[1],v:bv,spd:bv<.3?.5:bv<.7?.75:1}:null;}
 function practiceSpot(sg,sp){openSong(sg.id);$('#barFrom').value=sp.from+1;$('#barTo').value=sp.to+1;$('#spd').value=String(sp.spd);$('#songLoop').checked=true;
   setMode('tempo');applySong();}
+// ==SIMP
+// ---------- Leichte Versionen: eigene, automatische Vereinfachung eines Songs ----------
+// Behält die Melodie (höchster Ton), lässt Füll- und Durchgangstöne auf schwachen, kurzen Positionen weg,
+// legt Töne auf bequeme Lagen (bevorzugt Bund 0–5, wenig Lagenwechsel) und entschärft Techniken.
+// Die Zeiten der verbleibenden Noten bleiben unverändert – so passen Rhythmus und YouTube-Abgleich weiter.
+const OPENM=[64,59,55,50,45,40];
+function simplifyEvents(sg,level){
+  const easy=level==='leicht',src0=sg.events,bars=sg.bars,bpm=sg.bpm||100;
+  const barStart=b=>{let lo=0,hi=bars.length-1;while(lo<hi){const m=(lo+hi+1)>>1;if(bars[m]<=b+1e-6)lo=m;else hi=m-1;}return bars[lo];};
+  // 1) Wichtigkeit jeder Note: Zählzeit, Länge, Melodiebogen, Wiederholung
+  const ev=src0.map((e,i)=>{const pos=e.beat-barStart(e.beat),fr=pos-Math.floor(pos+1e-6);
+    let w=pos<.05?4:fr<.05?(Math.round(pos)%2===0?3:2.6):Math.abs(fr-.5)<.05?1.6:Math.abs(fr-.25)<.05||Math.abs(fr-.75)<.05?.6:.2;
+    w+=e.dur>=1?1.5:e.dur>=.5?.8:e.dur<.2?-1.2:0;
+    const p=src0[i-1],n=src0[i+1];
+    if(p&&n&&((e.midi>p.midi&&e.midi>n.midi)||(e.midi<p.midi&&e.midi<n.midi)))w+=.8;  // Hoch-/Tiefpunkt der Melodie
+    if(p&&p.midi===e.midi&&e.beat-p.beat<.6)w-=1.3;                                        // schnelle Wiederholung
+    if(e.alts)w+=.5;
+    return {e,i,w};});
+  // 2) Auswahl: wichtigste Noten zuerst, Mindestabstand je nach Stufe und Tempo
+  const pick=gap=>{const keep=new Set(),taken=[];
+    const sorted=[...ev].sort((a,b)=>b.w-a.w||a.e.beat-b.e.beat);
+    for(const x of sorted){const b=x.e.beat;if(taken.some(t=>Math.abs(t-b)<gap-1e-6))continue;keep.add(x.i);taken.push(b);}
+    // jeder Takt mit Noten behält mindestens eine
+    const byBar={};ev.forEach(x=>{(byBar[x.e.bar]=byBar[x.e.bar]||[]).push(x);});
+    for(const k in byBar){const xs=byBar[k];if(!xs.some(x=>keep.has(x.i)))keep.add(xs.sort((a,b)=>b.w-a.w)[0].i);}
+    return keep;};
+  const secGap=easy?.3:.14,minGap=Math.max(easy?.5:.25,secGap*bpm/60);
+  let gap=easy?Math.ceil(minGap*4-1e-6)/4:Math.max(.25,.2*bpm/60),keep=pick(gap);
+  if(!easy)for(let k=0;k<4&&keep.size>src0.length*.85;k++){gap+=.08;keep=pick(gap);}
+  if(easy)for(let k=0;k<4&&keep.size>src0.length*.6;k++){gap+=.25;keep=pick(gap);}
+  if(easy&&keep.size<src0.length*.35&&gap>.5){gap=Math.max(.5,gap-.25);keep=pick(gap);}
+  let out=ev.filter(x=>keep.has(x.i)).map(x=>({...x.e,alts:undefined,tech:undefined,_i:x.i,_alts:x.e.alts}));
+  // 3) Techniken: Leicht → alles normal anschlagen; Mittel → Hammer-on/Pull-off nur, wenn der Vorgänger erhalten blieb
+  if(!easy)out.forEach((e,k)=>{const o=src0[e._i];if((o.tech==='h'||o.tech==='p')&&k>0&&out[k-1]._i===e._i-1)e.tech=o.tech;});
+  // 4) Mittel: Basston auf betonten Zählzeiten bei Akkorden
+  if(!easy)out.forEach(e=>{if(!e._alts)return;const pos=e.beat-barStart(e.beat);if(Math.abs(pos-Math.round(pos))>.05||Math.round(pos)%2)return;
+    const lo=[...e._alts].sort((a,b)=>a.midi-b.midi)[0];if(lo&&lo.midi<e.midi-4)e._bass=lo.midi;});
+  // 5) Längen: bis zur nächsten verbleibenden Note (Haupt-Zeitpunkte bleiben)
+  out.forEach((e,k)=>{const n=out[k+1],o=src0[e._i];e.dur=+(n?Math.min(4,Math.max(o.dur,n.beat-e.beat)):Math.max(1,o.dur)).toFixed(4);});
+  // 6) Griffbrett: dieselbe Tonhöhe auf bequeme Saite/Lage legen (dynamische Optimierung über alle Noten)
+  const maxF=easy?12:15,fit=m=>{while(m>OPENM[0]+maxF)m-=12;while(m<40)m+=12;return m;};
+  const cands=m=>{const c=[];for(let s=0;s<6;s++){const f=m-OPENM[s];if(f>=0&&f<=maxF)c.push({s,f});}return c;};
+  const fc=f=>f===0?-.3:easy?(f>5?(f-5)*1.4:0)+(f>3?.3:0):(f>7?(f-7)*.8:0);
+  const tc=(a,b,dt)=>{let c=Math.abs(a.s-b.s)*.25;if(a.f>0&&b.f>0){const d=Math.abs(a.f-b.f);if(d>3)c+=(d-3)*(dt<1?1.6:.9);}return c;};
+  const melody=out.map(e=>fit(e.midi)),C=melody.map(cands);
+  let prev=C[0].map(c=>({cost:fc(c.f),back:-1}));const backs=[prev];
+  for(let k=1;k<C.length;k++){const dt=out[k].beat-out[k-1].beat;
+    const cur=C[k].map(c=>{let best=1e9,bi=0;C[k-1].forEach((p,j)=>{const v=prev[j].cost+tc(p,c,dt);if(v<best){best=v;bi=j;}});return {cost:best+fc(c.f),back:bi};});
+    backs.push(cur);prev=cur;}
+  let j=prev.reduce((bi,x,i,a)=>x.cost<a[bi].cost?i:bi,0);
+  for(let k=C.length-1;k>=0;k--){const c=C[k][j];out[k].s=c.s;out[k].f=c.f;out[k].midi=melody[k];j=backs[k][j].back;}
+  // Basston auf tieferer Saite nahe der Melodie-Lage
+  out.forEach(e=>{if(e._bass==null)return;const m=fit(e._bass),c=cands(m).filter(x=>x.s>e.s).sort((a,b)=>Math.abs(a.f-e.f)-Math.abs(b.f-e.f))[0];
+    if(c&&Math.abs(c.f-e.f)<=4||c&&c.f===0)e.alts=[{s:c.s,f:c.f,midi:m}];});
+  // Slides gehen nur auf derselben Saite – sonst normal anschlagen
+  out.forEach((e,k)=>{if(e.tech&&(!out[k-1]||out[k-1].s!==e.s))delete e.tech;delete e._i;delete e._alts;delete e._bass;if(!e.alts)delete e.alts;if(!e.tech)delete e.tech;});
+  return out;}
+function makeSimple(orig,level){
+  const evs=simplifyEvents(orig,level),name=level==='leicht'?'Leicht':'Mittel';
+  return {...JSON.parse(JSON.stringify(orig)),id:Date.now(),title:orig.title+' · '+name,simp:level,parent:orig.id,events:evs,
+    tracks:[{i:orig.ti??0,name:orig.track}],tuning:[64,59,55,50,45,40],tuningStd:true,mt:{},last:null,fav:false,diff:null,diffV:0};}
+
+function simpMenu(){if(!song)return;
+  if(song.simp){const o=songs.find(q=>q.id===song.parent);if(o)openSong(o.id);else $('#songHint').textContent='Das Original ist nicht mehr in der Liste.';return;}
+  const o=song,d0=songDiff(o),mk=lv=>{const t={...o,events:simplifyEvents(o,lv),diff:null,diffV:0};return {n:t.events.length,d:songDiff(t)};};
+  const L=mk('leicht'),M=mk('mittel');
+  const go=lv=>{songs=songs.filter(q=>!(q.parent===o.id&&q.simp===lv));const c=makeSimple(o,lv);songs.unshift(c);
+    if(!saveSongs()){songs.shift();$('#songHint').textContent='Kein Speicherplatz mehr.';return;}openSong(c.id);
+    $('#songHint').textContent='✨ '+(lv==='leicht'?'Leichte':'Mittlere')+' Version: '+c.events.length+' statt '+o.events.length+' Noten, Griffe für Standardstimmung. „↩ Original“ führt zurück.';};
+  modal('Leichtere Version erstellen',o.title+' · Original: '+o.events.length+' Noten, Schwierigkeit '+stars(d0),[
+    {ic:'🌱',name:'Leicht – '+L.n+' Noten ('+Math.round(L.n/o.events.length*100)+' %)',sub:'Nur die Melodie-Haupttöne, Bund 0–5 bevorzugt, keine Techniken · '+stars(L.d),go:()=>go('leicht')},
+    {ic:'🌿',name:'Mittel – '+M.n+' Noten ('+Math.round(M.n/o.events.length*100)+' %)',sub:'Melodie + Bass auf betonten Schlägen, Hammer-on/Pull-off bleiben · '+stars(M.d),go:()=>go('mittel')}]);}
 // ---------- Songs-Liste: Suche, Sortierung, Filter, Favoriten, Schwierigkeit ----------
 let sQuery='',sSort=store.get('gt-ssort','last'),sFilt=store.get('gt-sfilt','Alle');
 // Schwierigkeit 1–5 aus Notendichte, Lage, Akkorden, Techniken und Tempo
@@ -1568,13 +1642,15 @@ function applySong(){
 function fillTracks(){const t=$('#trk');t.innerHTML='';const list=song.tracks||[{i:song.ti||0,name:song.track}];
   list.forEach(x=>{const o=document.createElement('option');o.value=x.i;o.textContent='🎸 '+x.name;if(x.i===(song.ti??list[0].i))o.selected=true;t.appendChild(o);});
   t.style.display=list.length>1?'':'none';}
+$('#simpBtn').onclick=simpMenu;
 $('#trk').onchange=async()=>{if(!song)return;const ti=+$('#trk').value,f=await idb.get(song.id);
   if(!f){$('#songHint').textContent='Für den Spurwechsel die Datei bitte einmal neu importieren.';fillTracks();return;}
   try{const at=await loadAT(),score=at.importer.ScoreLoader.loadScoreFromBytes(new Uint8Array(f.buf),new at.Settings());
     const n=makeSong(score,ti,f.name,song.id);n.yt=song.yt;n.mt=song.mt;n.last=song.last;Object.assign(song,n);saveSongs();renderSongs();openSong(song.id);}
   catch(x){$('#songHint').textContent='Spurwechsel fehlgeschlagen: '+x.message;}};
 function openSong(id){
-  song=songs.find(q=>q.id===id);if(!song)return;fillTracks();
+  ytPanel=false;$('#ytIn').style.display='none';
+  song=songs.find(q=>q.id===id);if(!song)return;fillTracks();$('#simpBtn').textContent=song.simp?'↩ Original':'✨ Leichter';
   curFree={name:song.title};src='song';
   $('#barFrom').max=$('#barTo').max=song.bars.length;$('#barFrom').value=1;$('#barTo').value=song.bars.length;
   $('#songHint').textContent=(song.tuningStd?'':'⚠ Stimmung dieses Songs: '+tuneName(song.tuning)+' · ')+(song.yt?'Tipp: Mit Kopfhörern hört die App das Video nicht mit.':'');
@@ -1585,7 +1661,8 @@ function ytId(u){u=String(u).trim();const m=u.match(/(?:youtu\.be\/|[?&]v=|short
 function loadYT(){return ytApi||(ytApi=new Promise((res,rej)=>{if(window.YT&&YT.Player)return res();
   const prev=window.onYouTubeIframeAPIReady;window.onYouTubeIframeAPIReady=()=>{prev&&prev();res();};
   const s=document.createElement('script');s.src='https://www.youtube.com/iframe_api';s.onerror=()=>{ytApi=null;rej(new Error('YouTube ist nicht erreichbar.'));};document.head.appendChild(s);}));}
-function updYtUI(){const has=song&&song.yt;$('#ytSync').style.display=has?'inline-flex':'none';$('#ytBtn').textContent=has?'Video ändern':'▶ YouTube';
+let ytPanel=false;
+function updYtUI(){const has=song&&song.yt;$('#ytSync').style.display=has&&ytPanel&&!(running&&!paused)?'flex':'none';$('#ytBtn').textContent=has?(ytPanel?'🎬 Video ▴':'🎬 Video'):'▶ YouTube';
   if(has)$('#ytOff').textContent=song.yt.off.toFixed(1).replace('.',',')+' s';}
 async function setupYT(){
   updYtUI();const w=$('#ytWrap');
@@ -1598,12 +1675,12 @@ async function setupYT(){
   yt=new YT.Player('ytBox',{videoId:song.yt.id,playerVars:{playsinline:1,rel:0,modestbranding:1},
     events:{onReady:()=>{ytOK=true;},onError:()=>{$('#songHint').textContent='Dieses Video lässt sich nicht einbetten. Probier ein anderes.';}}});
   yt._vid=song.yt.id;}
-$('#ytBtn').onclick=()=>{$('#ytSearch').href='https://www.youtube.com/results?search_query='+encodeURIComponent((song?song.title+' '+song.artist:'')+' guitar');const i=$('#ytIn');i.style.display=i.style.display==='flex'?'none':'flex';$('#ytUrl').value=song&&song.yt?'https://youtu.be/'+song.yt.id:'';};
+$('#ytBtn').onclick=()=>{$('#ytSearch').href='https://www.youtube.com/results?search_query='+encodeURIComponent((song?song.title+' '+song.artist:'')+' guitar');ytPanel=!ytPanel;const i=$('#ytIn');i.style.display=ytPanel&&!(song&&song.yt)?'flex':'none';if(ytPanel&&song&&song.yt)i.style.display='flex';updYtUI();$('#ytUrl').value=song&&song.yt?'https://youtu.be/'+song.yt.id:'';};
 $('#ytOk').onclick=()=>{const id=ytId($('#ytUrl').value);if(!id){$('#songHint').textContent='Das ist kein gültiger YouTube-Link.';return;}
-  song.yt={id,off:song.yt&&song.yt.id===id?song.yt.off:0};saveSongs();$('#ytIn').style.display='none';renderSongs();
+  song.yt={id,off:song.yt&&song.yt.id===id?song.yt.off:0};saveSongs();$('#ytIn').style.display='none';ytPanel=true;renderSongs();
   $('#songHint').textContent='Starte das Video und tippe genau beim Einsatz von Takt '+(songFrom+1)+' auf „Jetzt = Takt '+(songFrom+1)+'“. Tipp: Mit Kopfhörern hört die App das Video nicht mit.';
   setMode('tempo');reset();setupYT();};
-$('#ytDel').onclick=()=>{if(!song)return;song.yt=null;saveSongs();$('#ytIn').style.display='none';renderSongs();setupYT();};
+$('#ytDel').onclick=()=>{if(!song)return;song.yt=null;saveSongs();$('#ytIn').style.display='none';ytPanel=false;renderSongs();setupYT();};
 const setOff=v=>{song.yt.off=Math.round(v*10)/10;saveSongs();updYtUI();};
 $('#ytM').onclick=()=>song&&song.yt&&setOff(song.yt.off-.1);
 $('#ytP').onclick=()=>song&&song.yt&&setOff(song.yt.off+.1);
