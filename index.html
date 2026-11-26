@@ -385,7 +385,7 @@ E|-----------------------------|</textarea>
       <label class="set"><div>Ton automatisch vorspielen<small>Vor jedem Ton im Warten-Modus</small></div><span class="sw"><input type="checkbox" id="autoPlay"><span></span></span></label>
       <div class="set" style="flex-wrap:wrap"><div>Mikrofon<small id="micNow">Mikro aus</small></div><select id="micSel" style="max-width:190px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px;font-size:13px"><option value="auto">Automatisch (iPhone-Mikro bevorzugt)</option></select></div>
       <div class="set"><div>Verzögerung ausgleichen<small>Bluetooth-Mikros hören ca. 150–250 ms später. Wird je Mikro gespeichert.</small></div><span style="display:flex;align-items:center;gap:6px"><input type="range" id="latR" min="0" max="400" step="10" value="0" style="max-width:110px"><b id="latV" style="font-family:var(--mono);font-size:12px;min-width:48px">0 ms</b></span></div>
-      <div class="set"><div>Mikrofon-Empfindlichkeit<small>Je Mikro gespeichert. Passt sich automatisch an den Raum an. Weiter links = reagiert auf noch leisere Töne</small></div><input type="range" id="sens" min="12" max="40" value="15" style="max-width:140px"></div>
+      <div class="set"><div>Mikrofon-Empfindlichkeit<small>Je Mikro gespeichert. Weiter rechts = leise Umgebungsgeräusche werden sicherer ignoriert. Passt sich automatisch an den Raum an. Weiter links = reagiert auf noch leisere Töne</small></div><input type="range" id="sens" min="12" max="40" value="15" style="max-width:140px"></div>
       <div class="set"><div>Zoom der Tabs</div><input type="range" id="zoom" min="60" max="200" value="115" style="max-width:140px"></div>
     </div>
     <div class="card" style="font-size:13px;color:var(--mute);line-height:1.5">
@@ -760,7 +760,7 @@ async function startMic(){
   const s=ac.createMediaStreamSource(stream);analyser=ac.createAnalyser();analyser.fftSize=4096;buf=new Float32Array(4096);
   const mute=ac.createGain();mute.gain.value=0;
   s.connect(analyser);analyser.connect(mute).connect(ac.destination);setupSpec(s,mute);
-  D=ac.sampleRate>30000?2:1;ds=new Float32Array(4096/D);floorRms=.003;micOn=true;store.set('gt-mic',1);$('#banner').style.display='none';
+  D=ac.sampleRate>30000?2:1;ds=new Float32Array(4096/D);floorRms=.003;playLvl=0;micOn=true;store.set('gt-mic',1);$('#banner').style.display='none';
   loadMicProf();fillMicSel();
   if(micInfo.bt){const b=$('#banner');b.style.display='block';b.innerHTML='<b>🎧 Kopfhörer-Mikro aktiv:</b> '+(micInfo.label||'Bluetooth')+'. Eigene Empfindlichkeit und '+micLat+' ms Verzögerungsausgleich sind eingestellt. Für die Gitarre ist meist das iPhone-Mikro genauer – umstellen unter Fortschritt → Einstellungen → Mikrofon.';setTimeout(()=>{if(micInfo.bt)b.style.display='none';},9000);}
 }
@@ -856,10 +856,21 @@ function tmpl(S,m,s){const f=fOf(m);let v=0;for(let h=1;h<=8;h++){const fh=h*f*M
 function noteScores(D){
   const sc=[];let mx=0;
   for(let m=38;m<=90;m++){const f=fOf(m);let s=0,odd=0;
-    for(let h=1;h<=8;h++){const fh=h*f*Math.sqrt(1+.00008*h*h);if(fh>5000)break;const v=pk(D,fh)*HW[h-1];s+=v;if(h%2)odd+=v;}
+    let mxh=0,low=0;
+    for(let h=1;h<=8;h++){const fh=h*f*Math.sqrt(1+.00008*h*h);if(fh>5000)break;const p=pk(D,fh),v=p*HW[h-1];s+=v;if(h%2)odd+=v;if(p>mxh)mxh=p;if(h<=2&&p>low)low=p;}
     if(odd<.3*s)s*=.5;            // nur gerade Obertöne → eher eine Oktave höher
+    if(low<.15*mxh)s*=.2;         // weder Grundton noch 1. Oberton da → nur Obertöne eines anderen Tons (z. B. B als 3. Oberton von E)
     sc.push({m,s});if(s>mx)mx=s;}
   return {sc,mx};}
+// Lautstärke-Tor: Unter dieser Schwelle wird nichts als Anschlag gewertet (wie die „Stille-Schwelle“ bei aubio).
+// Mindestens ca. −48 dBFS (über den Regler „Empfindlichkeit“ verschiebbar), mindestens 4× Raumrauschen
+// und – sobald bekannt – mindestens ein Viertel deiner typischen Anschlag-Lautstärke.
+let playLvl=0;
+function gate(){let g=Math.max(.004*(+$('#sens').value/15),floorRms*4);if(playLvl)g=Math.max(g,playLvl*.25);return g;}
+// Tonhaltigkeit: Anteil der neuen Energie, der auf die Obertöne eines Tons fällt (Gitarrenton hoch, Klacken/Rauschen niedrig)
+function harmShare(D,m){const f=fOf(m);let h=0,t=0;const used=new Uint8Array(nb);
+  for(let k=1;k<=10;k++){const fh=k*f*Math.sqrt(1+.00008*k*k);if(fh>5000)break;const lo=Math.max(1,Math.floor(fh*.983/binHz)),hi=Math.min(nb-1,Math.ceil(fh*1.017/binHz));for(let i=lo;i<=hi;i++)if(!used[i]){used[i]=1;h+=D[i];}}
+  for(let i=lowBin;i<nb;i++)t+=D[i];return t>0?h/t:0;}
 // Welche Töne werden gerade erwartet? (Warten: aktueller + nächster Ton; Tempo: Töne im Zeitfenster)
 function expTargets(){const out=[];if(!running||paused)return out;
   const add=e=>{if(!e)return;out.push({m:e.midi,s:e.s});if(e.alts)e.alts.forEach(a=>out.push({m:a.midi,s:a.s}));};
@@ -879,37 +890,43 @@ function specStep(now){
   sring.push({m:cur,t:now});if(sring.length>14)sring.shift();
   fluxH.push(rel);if(fluxH.length>60)fluxH.shift();
   const srt=[...fluxH].sort((a,b)=>a-b),med=srt[srt.length>>1]||0;
-  const on=!warm&&ref&&rel>Math.max(med*2.2,.05)&&rms>thr()*.6&&now-lastOn>110;
+  const on=!warm&&ref&&rel>Math.max(med*2.5,.08)&&rms>gate()*.7&&now-lastOn>110;
   if(on){lastOn=now;lastOnsetT=now;lastOnsetBeat=curBeat();onsetFlag=true;
-    pend={t:now-micLat,beat:curBeat()-micLat/1000*bpm/60,pre:sring[Math.max(0,sring.length-5)].m,n:0,acc:new Float32Array(nb)};}
+    pend={t:now-micLat,beat:curBeat()-micLat/1000*bpm/60,pre:sring[Math.max(0,sring.length-5)].m,n:0,acc:new Float32Array(nb),peak:rms};}
   const exp=expTargets();
   // Stufe 2: leiser Anschlag ohne deutlichen Gesamt-Zuwachs – der ERWARTETE Ton steigt aber klar an
-  if(!warm&&!pend&&noiseN>20&&exp.length&&sring.length>=8&&now-lastOn>250&&now-lastExpOn>250){
+  if(!warm&&!pend&&noiseN>20&&exp.length&&sring.length>=8&&now-lastOn>250&&now-lastExpOn>250&&playLvl>0&&rms>=Math.max(gate(),playLvl*.35)&&stableMidi!==null){
     const old=sring[sring.length-8].m;
     for(const t of exp){
-      if(lastHitPc===pc(t.m)&&now-lastHitTime<450)continue;      // eben getroffener Ton klingt noch an – kein zweiter Treffer
+      if(lastHitPc===pc(t.m)&&now-lastHitTime<450)continue;
+      if(pc(stableMidi)!==pc(t.m))continue;                          // Tonhöhenerkennung muss denselben Ton hören      // eben getroffener Ton klingt noch an – kein zweiter Treffer
       // die ersten vier Obertöne müssen einzeln deutlich ansteigen (nicht nur Überlappung mit einem anderen Ton)
       const f=fOf(t.m);let up=0;for(let h=1;h<=4;h++){const fh=h*f*Math.sqrt(1+.00008*h*h);const x=pk(cur,fh),y=pk(old,fh),z=pk(noiseSpec,fh);if(x>y*1.6&&x>z*5)up++;}
       const a=tmpl(cur,t.m,t.s),b=tmpl(old,t.m,t.s),nz=tmpl(noiseSpec,t.m,t.s);
-      if(up>=2&&a>b*1.9&&a>nz*5){lastExpOn=now;lastOn=now;lastOnsetT=now;lastOnsetBeat=curBeat();
+      const Dd=new Float32Array(nb);for(let i=0;i<nb;i++){const d=cur[i]-old[i];if(d>0)Dd[i]=d;}
+      if(up>=2&&a>b*1.9&&a>nz*5&&harmShare(Dd,t.m)>=.4){lastExpOn=now;lastOn=now;lastOnsetT=now;lastOnsetBeat=curBeat();
         const r={t:now-60-micLat,beat:curBeat()-(60+micLat)/1000*bpm/60,notes:[t.m],exp:[t.m],top:t.m,soft:true};onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();break;}}}
-  if(pend){pend.n++;
+  if(pend){pend.n++;if(rms>pend.peak)pend.peak=rms;
     // Zuwachs gegenüber vor dem Anschlag aufsummieren (Frames 3–9 ≈ 50–150 ms)
     if(pend.n>=3)for(let i=0;i<nb;i++){const d=cur[i]-pend.pre[i];if(d>0)pend.acc[i]+=d;}
-    if(pend.n>=9){const {sc,mx}=noteScores(pend.acc);
-      const win=mx>0?sc.filter(x=>x.s>=.5*mx).sort((a,b)=>b.s-a.s).slice(0,4):[];
-      // Erwartete Töne: eigene Schablone je Saite, niedrigere Schwelle (30 % des stärksten neuen Tons)
-      const ex=[];
-      if(mx>0&&win.length){const R=pend.acc.slice(),tf=fOf(win[0].m);
-        for(let h=1;h<=10;h++){const fh=h*tf*Math.sqrt(1+.00008*h*h);const lo=Math.floor(fh*.983/binHz),hi=Math.ceil(fh*1.017/binHz);for(let i=lo;i<=hi&&i<nb;i++)R[i]=0;}
-        for(const t of exp){if(pc(t.m)===pc(win[0].m)){ex.push(t.m);continue;}const v=tmpl(R,t.m,t.s);if(v>=.3*mx)ex.push(t.m);}}
-      const r={t:pend.t,beat:pend.beat,notes:win.map(x=>x.m),exp:ex,top:win.length?win[0].m:null};
-      onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();pend=null;}}
+    if(pend.n>=9){const P=pend;pend=null;
+      if(P.peak<gate())return;                                   // zu leise → Umgebungsgeräusch, kein Anschlag
+      const {sc,mx}=noteScores(P.acc);if(!(mx>0))return;
+      const win=sc.filter(x=>x.s>=.8*mx).sort((a,b)=>b.s-a.s).slice(0,3);
+      if(!win.length)return;
+      // Tonhaltigkeit: klarer Ton ≥ 30 %; darunter „unsicher“ – zählt nur, wenn er so laut ist wie deine echten Anschläge
+      const weak=harmShare(P.acc,win[0].m)<.3;
+      if(weak&&!(playLvl>0&&P.peak>=.5*playLvl))return;           // Klacken, Rauschen, Murmeln
+      // erwartete Töne: eigene Prüfung, aber nur wenn sie zu den stärksten neuen Tönen gehören und ihr Grundton/1. Oberton da ist
+      const ex=[];for(const t of exp){const v=tmpl(P.acc,t.m,t.s),f=fOf(t.m),lo=Math.max(pk(P.acc,f),pk(P.acc,2*f));if(v>=(weak?.6:.8)*mx&&harmShare(P.acc,t.m)>=(weak?.15:.3)&&lo>0)ex.push(t.m);}
+      const r={t:P.t,beat:P.beat,notes:weak?[]:win.map(x=>x.m),exp:ex,top:weak?null:win[0].m,peak:P.peak,weak};
+      onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();}}
 }
 // Passt ein Anschlag zum Zielton (oder einem Ton des Akkords)?
 function onsetMatches(r,ev){if(!ev)return false;const tg=[ev,...(ev.alts||[])],oct=$('#octTol').checked;
   const eq=m=>tg.some(t=>oct?pc(m)===pc(t.midi):Math.abs(m-t.midi)===0||Math.abs(m-t.midi)===12);
-  return r.notes.some(eq)||(r.exp||[]).some(eq);}
+  // Einzelton: muss der STÄRKSTE neue Ton sein (oder der erwartete Ton ist eindeutig da); Akkord: einer der stärksten
+  return (ev.alts?r.notes.some(eq):r.top!=null&&eq(r.top))||(r.exp||[]).some(eq);}
 
 const matches=ev=>stableMidi!==null&&($('#octTol').checked?pc(stableMidi)===pc(ev.midi):stableMidi===ev.midi);
 // Großzügige Treffer-Prüfung: 2 von 4 Messungen genügen, kurz nach dem Anschlag auch 1 von 2; bis 60 Cent daneben zählt noch
@@ -981,16 +998,13 @@ function tick(){
         while(onQ.length&&!done){const r=onQ.shift();if(r.t<=lastUsedOn)continue;
           // gleicher Ton nochmal: nur ein neuer Anschlag mit etwas Abstand zählt (kein Doppel-Auslöser)
           if(lastHitPc===pc(ev.midi)&&r.t-lastUsedOn<280)continue;
-          if(onsetMatches(r,ev)){lastUsedOn=r.t;aheadT=0;hitCurrent(false);done=true;}
+          if(onsetMatches(r,ev)){lastUsedOn=r.t;aheadT=0;if(r.peak)playLvl=playLvl?playLvl*.8+r.peak*.2:r.peak;hitCurrent(false);done=true;}
           // Ton ausgelassen? Erst nach zwei klaren Anschlägen auf die Folgetöne nachziehen
           else if(aheadT&&onsetMatches(r,events[idx+2])){ev.state='miss';misses++;idx++;lastUsedOn=r.t;hitCurrent(false);hitCurrent(false);aheadT=0;done=true;}
           else if(onsetMatches(r,events[idx+1])){aheadT=r.t;}
           else if(r.top!==null&&!ev.wrong&&!ev.tech&&!related(r.top,ev.midi)&&pc(r.top)!==pc(ev.midi)){ev.wrong=1;flash('bad');}}
         const ringing=recent.some(m=>pc(m)===pc(ev.midi));
-        if(!done&&ev.tech&&hitOK(ev)&&!ringing){lastUsedOn=lastOn;hitCurrent(false);done=true;}
-        // Sicherheitsnetz für sehr leise Anschläge: Ton klingt klar > 0,6 s und klang vorher nicht
-        if(!done&&matches(ev)&&!ringing){if(!stableSince)stableSince=now;else if(now-stableSince>600){stableSince=0;lastUsedOn=lastOn;hitCurrent(false);}}
-        else if(!done)stableSince=0;
+        if(!done&&ev.tech&&matches(ev)&&!ringing&&rms>=gate()*.5&&now-lastHitTime<900){lastUsedOn=lastOn;hitCurrent(false);done=true;}
       }
       else if(ev){
         if(hitOK(ev)&&(lastHitPc!==pc(ev.midi)||onsetFlag||ev.tech))hitCurrent(false);
@@ -1012,7 +1026,7 @@ function tick(){
         if(b<wo)break;
         if(!micOn){if(b>ev.beat){ev.state='pass';idx=i+1;updHud();}continue;}
         if(b<=wc){let ok=false;
-          if(useOnset()){const r=onLog.find(r=>!r.used&&r.beat>=wo-.1&&r.beat<=wc&&onsetMatches(r,ev));if(r){r.used=true;ok=true;}else if(ev.tech&&hitOK(ev))ok=true;}
+          if(useOnset()){const r=onLog.find(r=>!r.used&&r.beat>=wo-.1&&r.beat<=wc&&onsetMatches(r,ev));if(r){r.used=true;ok=true;if(r.peak)playLvl=playLvl?playLvl*.8+r.peak*.2:r.peak;}else if(ev.tech&&matches(ev)&&rms>=gate()*.5)ok=true;}
           else{const pv=events[i-1],fresh=lastOnsetBeat>=wo||!pv||pc(pv.midi)!==pc(ev.midi)||ev.tech;ok=hitOK(ev)&&fresh;}
           if(ok){ev.state='hit';hits++;idx=i+1;flash('good');updHud();}}
         else{ev.state='miss';misses++;idx=i+1;flash('bad');updHud();}
