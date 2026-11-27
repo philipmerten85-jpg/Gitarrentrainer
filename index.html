@@ -816,7 +816,7 @@ function listen(){
   else{floorRms=Math.min(floorRms*1.0008,.02);
        if(!useOnset()&&rmsSlow>0&&rms>rmsSlow*1.5&&now-lastHitTime>140){onsetFlag=true;lastOnsetBeat=curBeat();lastOnsetT=now;}
        if(silent>2){lastOnsetBeat=curBeat();lastOnsetT=now;}silent=0;}
-  rmsSlow=rmsSlow*.85+rms*.15;
+  rmsSlow=rmsSlow*.85+rms*.15;decayLvl(now);
   if(useOnset())specStep(now);
   if(rms<th){hist=[];rawF=[];stableMidi=null;tunBuf=[];return;}
   for(let i=0,k=0;k<ds.length;k++,i+=D){let v=0;for(let j=0;j<D;j++)v+=buf[i+j];ds[k]=v/D;}
@@ -865,8 +865,13 @@ function noteScores(D){
 // Lautstärke-Tor: Unter dieser Schwelle wird nichts als Anschlag gewertet (wie die „Stille-Schwelle“ bei aubio).
 // Mindestens ca. −48 dBFS (über den Regler „Empfindlichkeit“ verschiebbar), mindestens 4× Raumrauschen
 // und – sobald bekannt – mindestens ein Viertel deiner typischen Anschlag-Lautstärke.
-let playLvl=0;
-function gate(){let g=Math.max(.004*(+$('#sens').value/15),floorRms*4);if(playLvl)g=Math.max(g,playLvl*.25);return g;}
+let playLvl=0,lvlT=0;
+// gelernte Anschlagstärke: ein einzelner sehr lauter Anschlag zieht sie nur begrenzt hoch
+function learnLvl(p){if(!p)return;playLvl=playLvl?playLvl*.8+Math.min(p,playLvl*2)*.2:p;}
+// … und wenn länger nichts erkannt wurde, sinkt sie wieder (sonst hängt die App nach lauten Anschlägen fest)
+function decayLvl(now){const dt=lvlT?Math.min(.2,(now-lvlT)/1000):0;lvlT=now;if(playLvl&&now-lastHitTime>2500){playLvl*=Math.pow(.7,dt);if(playLvl<.006)playLvl=0;}}
+function baseGate(){return Math.max(.004*(+$('#sens').value/15),floorRms*4);}
+function gate(){let g=baseGate();if(playLvl)g=Math.max(g,playLvl*.25);return g;}
 // Tonhaltigkeit: Anteil der neuen Energie, der auf die Obertöne eines Tons fällt (Gitarrenton hoch, Klacken/Rauschen niedrig)
 function harmShare(D,m){const f=fOf(m);let h=0,t=0;const used=new Uint8Array(nb);
   for(let k=1;k<=10;k++){const fh=k*f*Math.sqrt(1+.00008*k*k);if(fh>5000)break;const lo=Math.max(1,Math.floor(fh*.983/binHz)),hi=Math.min(nb-1,Math.ceil(fh*1.017/binHz));for(let i=lo;i<=hi;i++)if(!used[i]){used[i]=1;h+=D[i];}}
@@ -912,7 +917,10 @@ function specStep(now){
     // Zuwachs gegenüber vor dem Anschlag aufsummieren (Frames 3–9 ≈ 50–150 ms)
     if(pend.n>=3)for(let i=0;i<nb;i++){const d=cur[i]-pend.pre[i];if(d>0)pend.acc[i]+=d;}
     if(pend.n>=9){const P=pend;pend=null;
-      if(P.peak<gate())return;                                   // zu leise → Umgebungsgeräusch, kein Anschlag
+      if(P.peak<gate()){
+        // nur wegen der gelernten (lauten) Anschlagstärke zu leise, aber klar über dem Raum: du spielst jetzt leiser → Stärke nachführen
+        if(playLvl&&P.peak>=baseGate()*1.3){const {sc,mx}=noteScores(P.acc);const w=mx>0&&sc.reduce((a,b)=>b.s>a.s?b:a);if(w&&harmShare(P.acc,w.m)>=.5)playLvl=Math.max(P.peak*2,playLvl*.5);}
+        return;}                                   // zu leise → Umgebungsgeräusch, kein Anschlag
       const {sc,mx}=noteScores(P.acc);if(!(mx>0))return;
       const win=sc.filter(x=>x.s>=.8*mx).sort((a,b)=>b.s-a.s).slice(0,3);
       if(!win.length)return;
@@ -1003,7 +1011,7 @@ function tick(){
         while(onQ.length&&!done){const r=onQ.shift();if(r.t<=lastUsedOn)continue;
           // gleicher Ton nochmal: nur ein neuer Anschlag mit etwas Abstand zählt (kein Doppel-Auslöser)
           if(lastHitPc===pc(ev.midi)&&r.t-lastUsedOn<280)continue;
-          if(onsetMatches(r,ev)){lastUsedOn=r.t;aheadT=0;if(r.peak)playLvl=playLvl?playLvl*.8+r.peak*.2:r.peak;hitCurrent(false);done=true;}
+          if(onsetMatches(r,ev)){lastUsedOn=r.t;aheadT=0;learnLvl(r.peak);hitCurrent(false);done=true;}
           // Ton ausgelassen? Erst nach zwei klaren Anschlägen auf die Folgetöne nachziehen
           else if(aheadT&&onsetMatches(r,events[idx+2])){ev.state='miss';misses++;idx++;lastUsedOn=r.t;hitCurrent(false);hitCurrent(false);aheadT=0;done=true;}
           else if(onsetMatches(r,events[idx+1])){aheadT=r.t;}
@@ -1031,7 +1039,7 @@ function tick(){
         if(b<wo)break;
         if(!micOn){if(b>ev.beat){ev.state='pass';idx=i+1;updHud();}continue;}
         if(b<=wc){let ok=false;
-          if(useOnset()){const r=onLog.find(r=>!r.used&&r.beat>=wo-.1&&r.beat<=wc&&onsetMatches(r,ev));if(r){r.used=true;ok=true;if(r.peak)playLvl=playLvl?playLvl*.8+r.peak*.2:r.peak;}else if(ev.tech&&matches(ev)&&rms>=gate()*.5)ok=true;}
+          if(useOnset()){const r=onLog.find(r=>!r.used&&r.beat>=wo-.1&&r.beat<=wc&&onsetMatches(r,ev));if(r){r.used=true;ok=true;learnLvl(r.peak);}else if(ev.tech&&matches(ev)&&rms>=gate()*.5)ok=true;}
           else{const pv=events[i-1],fresh=lastOnsetBeat>=wo||!pv||pc(pv.midi)!==pc(ev.midi)||ev.tech;ok=hitOK(ev)&&fresh;}
           if(ok){ev.state='hit';hits++;idx=i+1;flash('good');updHud();}}
         else{ev.state='miss';misses++;idx=i+1;flash('bad');updHud();}
