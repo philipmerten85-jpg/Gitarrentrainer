@@ -884,9 +884,11 @@ function specStep(now){
   // Raumrauschen merken (nur in ruhigen Momenten)
   if(rms<thr()){noiseN++;if(!noiseSpec)noiseSpec=cur.slice();else for(let i=0;i<nb;i++)noiseSpec[i]=noiseSpec[i]*.95+cur[i]*.05;}
   const warm=now-specStart<800;   // Mikro schwingt sich ein – noch nichts auswerten
-  const ref=sring.length>=3?sring[sring.length-3]:null;let flux=0,tot=0;
-  if(ref){for(let i=lowBin;i<nb;i++){const a=cur[i],b=ref.m[i];tot+=Math.sqrt(a);if(a>b)flux+=Math.sqrt(a)-Math.sqrt(b);}}
-  const rel=tot>0?flux/tot:0;   // relativer Zuwachs – unabhängig von der Lautstärke (leise Anschläge!)
+  const ref=sring.length>=3?sring[sring.length-3]:null;let flux=0,tot=0,totN=0;
+  // Rauschboden je Frequenz abziehen (wie Whitening bei aubio/madmom): Raumrauschen erzeugt sonst ständig Schein-Zuwachs
+  const nz=noiseN>20&&floorRms>=.002?noiseSpec:null;   // nur in lauten Räumen – in leisen Räumen bleibt die strengere Prüfung
+  if(ref){for(let i=lowBin;i<nb;i++){let a=cur[i],b=ref.m[i];if(nz){const z=2*nz[i];a=a>z?a-z:0;b=b>z?b-z:0;totN+=Math.sqrt(z);}tot+=Math.sqrt(a);if(a>b)flux+=Math.sqrt(a)-Math.sqrt(b);}}
+  const rel=tot+totN>0?flux/(tot+totN):0;   // Rauschanteil im Nenner: reines Rauschen ergibt ~0 statt ~1   // relativer Zuwachs – unabhängig von der Lautstärke (leise Anschläge!)
   sring.push({m:cur,t:now});if(sring.length>14)sring.shift();
   fluxH.push(rel);if(fluxH.length>60)fluxH.shift();
   const srt=[...fluxH].sort((a,b)=>a-b),med=srt[srt.length>>1]||0;
@@ -918,7 +920,10 @@ function specStep(now){
       const weak=harmShare(P.acc,win[0].m)<.3;
       if(weak&&!(playLvl>0&&P.peak>=.5*playLvl))return;           // Klacken, Rauschen, Murmeln
       // erwartete Töne: eigene Prüfung, aber nur wenn sie zu den stärksten neuen Tönen gehören und ihr Grundton/1. Oberton da ist
-      const ex=[];for(const t of exp){const v=tmpl(P.acc,t.m,t.s),f=fOf(t.m),lo=Math.max(pk(P.acc,f),pk(P.acc,2*f));if(v>=(weak?.6:.8)*mx&&harmShare(P.acc,t.m)>=(weak?.15:.3)&&lo>0)ex.push(t.m);}
+      const ex=[];for(const t of exp){const v=tmpl(P.acc,t.m,t.s),f=fOf(t.m),lo=Math.max(pk(P.acc,f),pk(P.acc,2*f));if(v>=(weak?.6:.8)*mx&&harmShare(P.acc,t.m)>=(weak?.15:.3)&&lo>0){ex.push(t.m);continue;}
+        // tiefer Ton, dessen Oberton (Oktave/Quinte/2 Oktaven darüber) am lautesten klingt: zählt nur, wenn sein Grundton/1. Oberton
+        // mindestens so stark neu ansteigt wie der Grundton des lauten Obertons selbst (ein echter höherer Ton hat dort nichts)
+        const d=win[0].m-t.m;if(!weak&&[12,19,24].includes(d)&&harmShare(P.acc,t.m)>=.15&&lo>=pk(P.acc,fOf(win[0].m)))ex.push(t.m);}
       const r={t:P.t,beat:P.beat,notes:weak?[]:win.map(x=>x.m),exp:ex,top:weak?null:win[0].m,peak:P.peak,weak};
       onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();}}
 }
