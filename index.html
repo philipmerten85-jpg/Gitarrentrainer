@@ -760,7 +760,7 @@ async function startMic(){
   const s=ac.createMediaStreamSource(stream);analyser=ac.createAnalyser();analyser.fftSize=4096;buf=new Float32Array(4096);
   const mute=ac.createGain();mute.gain.value=0;
   s.connect(analyser);analyser.connect(mute).connect(ac.destination);setupSpec(s,mute);
-  D=ac.sampleRate>30000?2:1;ds=new Float32Array(4096/D);floorRms=.003;playLvl=0;micOn=true;store.set('gt-mic',1);$('#banner').style.display='none';
+  D=ac.sampleRate>30000?2:1;ds=new Float32Array(4096/D);floorRms=.003;playLvl=0;lvlHist=[];micOn=true;store.set('gt-mic',1);$('#banner').style.display='none';
   loadMicProf();fillMicSel();
   if(micInfo.bt){const b=$('#banner');b.style.display='block';b.innerHTML='<b>🎧 Kopfhörer-Mikro aktiv:</b> '+(micInfo.label||'Bluetooth')+'. Eigene Empfindlichkeit und '+micLat+' ms Verzögerungsausgleich sind eingestellt. Für die Gitarre ist meist das iPhone-Mikro genauer – umstellen unter Fortschritt → Einstellungen → Mikrofon.';setTimeout(()=>{if(micInfo.bt)b.style.display='none';},9000);}
 }
@@ -871,11 +871,13 @@ function noteScores(D){
 // und – sobald bekannt – mindestens ein Viertel deiner typischen Anschlag-Lautstärke.
 let playLvl=0,lvlT=0;
 // gelernte Anschlagstärke: ein einzelner sehr lauter Anschlag zieht sie nur begrenzt hoch
-function learnLvl(p){if(!p)return;playLvl=playLvl?playLvl*.8+Math.min(p,playLvl*2)*.2:p;}
+// typische Anschlagstärke = Median der letzten 9 erkannten Töne: einzelne laute Akzente verschieben ihn kaum
+let lvlHist=[];
+function learnLvl(p){if(!p)return;lvlHist.push(p);if(lvlHist.length>9)lvlHist.shift();const s=[...lvlHist].sort((a,b)=>a-b);playLvl=lvlHist.length>=3?s[s.length>>1]:Math.min(...lvlHist)*.7;}
 // … und wenn länger nichts erkannt wurde, sinkt sie wieder (sonst hängt die App nach lauten Anschlägen fest)
-function decayLvl(now){const dt=lvlT?Math.min(.2,(now-lvlT)/1000):0;lvlT=now;if(playLvl&&now-lastHitTime>2500){playLvl*=Math.pow(.7,dt);if(playLvl<.006)playLvl=0;}}
+function decayLvl(now){const dt=lvlT?Math.min(.2,(now-lvlT)/1000):0;lvlT=now;if(playLvl&&now-lastHitTime>2500){playLvl*=Math.pow(.7,dt);if(playLvl<.006){playLvl=0;lvlHist=[];}}}
 function baseGate(){return Math.max(.004*(+$('#sens').value/15),floorRms*4);}
-function gate(){let g=baseGate();if(playLvl)g=Math.max(g,playLvl*.25);return g;}
+function gate(){let g=baseGate();if(playLvl)g=Math.max(g,playLvl*.2);return g;}
 // Tonhaltigkeit: Anteil der neuen Energie, der auf die Obertöne eines Tons fällt (Gitarrenton hoch, Klacken/Rauschen niedrig)
 function harmShare(D,m){const f=fOf(m);let h=0,t=0;const used=new Uint8Array(nb);
   for(let k=1;k<=10;k++){const fh=k*f*Math.sqrt(1+.00008*k*k);if(fh>5000)break;const lo=Math.max(1,Math.floor(fh*.983/binHz)),hi=Math.min(nb-1,Math.ceil(fh*1.017/binHz));for(let i=lo;i<=hi;i++)if(!used[i]){used[i]=1;h+=D[i];}}
@@ -928,7 +930,7 @@ function specStep(now){
 function finP(P,exp){
       if(P.peak<gate()){
         // nur wegen der gelernten (lauten) Anschlagstärke zu leise, aber klar über dem Raum: du spielst jetzt leiser → Stärke nachführen
-        if(playLvl&&P.peak>=baseGate()*1.3){const {sc,mx}=noteScores(P.acc);const w=mx>0&&sc.reduce((a,b)=>b.s>a.s?b:a);if(w&&harmShare(P.acc,w.m)>=.5)playLvl=Math.max(P.peak*2,playLvl*.5);}
+        if(playLvl&&P.peak>=baseGate()*1.3){const {sc,mx}=noteScores(P.acc);const w=mx>0&&sc.reduce((a,b)=>b.s>a.s?b:a);if(w&&harmShare(P.acc,w.m)>=.5)playLvl=Math.max(P.peak*2,playLvl*.5);lvlHist=lvlHist.map(x=>Math.min(x,playLvl));}
         return;}                                   // zu leise → Umgebungsgeräusch, kein Anschlag
       const {sc,mx}=noteScores(P.acc);if(!(mx>0))return;
       const win=sc.filter(x=>x.s>=.8*mx).sort((a,b)=>b.s-a.s).slice(0,3);
@@ -1358,8 +1360,11 @@ function renderOv(){
       evs.forEach((e,j)=>{const p=events[events.indexOf(e)-1];if(!e.tech||!p||p.s!==e.s||p.beat<bs-1e-6)return;const x1=X(p.beat),x2=X(e.beat),y=top+e.s*gp;g.strokeStyle='#7cc4f2';g.lineWidth=1.5;g.beginPath();
         if(e.tech==='h'||e.tech==='p'){g.moveTo(x1+4,y-7);g.quadraticCurveTo((x1+x2)/2,y-15,x2-4,y-7);}else{g.moveTo(x1+5,y+(e.tech==='/'?3:-3));g.lineTo(x2-5,y+(e.tech==='/'?-3:3));}g.stroke();});
       for(const e of evs){const x=X(e.beat);
-        for(const n of [e,...(e.alts||[])]){const y=top+n.s*gp,col=e.state==='hit'?'#3ddc84':fing?FC[n.fg||0]:'#ece6de',tc=e.state==='hit'?'#04210f':fing?FT[n.fg||0]:'#14110f',rw=n.f>9?9:6.5;
-          g.fillStyle=col;g.beginPath();g.ellipse(x,y,rw,6.3,0,0,7);g.fill();g.fillStyle=tc;g.font='800 10px JetBrains Mono';g.fillText(n.f,x,y+.5);}
+        for(const n of [e,...(e.alts||[])]){const y=top+n.s*gp,col=fing?FC[n.fg||0]:'#ece6de',tc=fing?FT[n.fg||0]:'#14110f',rw=n.f>9?9:6.5;
+          // Fingerfarbe bleibt immer sichtbar; gespielt = grüner Ring, verpasst = roter Ring
+          g.fillStyle=col;g.beginPath();g.ellipse(x,y,rw,6.3,0,0,7);g.fill();
+          if(e.state==='hit'||e.state==='miss'){g.strokeStyle=e.state==='hit'?'#3ddc84':'#ff3b3b';g.lineWidth=2.2;g.beginPath();g.ellipse(x,y,rw+2.6,8.9,0,0,7);g.stroke();}
+          g.fillStyle=tc;g.font='800 10px JetBrains Mono';g.fillText(n.f,x,y+.5);}
         if(events.indexOf(e)===idx&&!finished){g.strokeStyle='#fff';g.lineWidth=2;g.beginPath();g.arc(x,top+e.s*gp,9.5,0,7);g.stroke();}
         // Rhythmus: Hals + Fähnchen
         const ys=bot+10,d=e.dur;g.strokeStyle='rgba(236,228,218,.8)';g.lineWidth=1.3;
