@@ -801,7 +801,7 @@ function detectPitch(x,sr){
   const a=ns[p-1],b=ns[p],c=ns[p+1],den=a-2*b+c,sh=den?.5*(a-c)/den:0;
   return {f:sr/(p+sh),clarity:b};}
 
-let hist=[],stableMidi=null,cents=0,rms=0,rmsSlow=0,onsetFlag=true,lastHitTime=0,lastHitPc=null,lastOnsetBeat=-99,silent=0,lastJudged=null,freq=0;
+let hist=[],stableMidi=null,cents=0,rms=0,rmsSlow=0,onsetFlag=true,lastHitTime=0,lastHitPc=null,lastOnsetBeat=-99,silent=0,silentSince=0,lastJudged=null,freq=0,lastListen=0;
 let D=2,ds=new Float32Array(2048),floorRms=.003,lastOnsetT=0,tunBuf=[],calRun=null;
 const cal=store.get('gt-cal',{a4:440,off:0});
 // Schwelle passt sich automatisch dem Grundrauschen im Raum an; der Regler ist nur noch der Abstand dazu
@@ -812,11 +812,13 @@ function listen(){
   analyser.getFloatTimeDomainData(buf);
   let s=0;for(let i=0;i<buf.length;i++)s+=buf[i]*buf[i];rms=Math.sqrt(s/buf.length);
   const th=thr(),now=performance.now();
-  if(rms<th){floorRms=Math.max(.0002,floorRms*.97+rms*.03);silent++;if(silent>2)onsetFlag=true;}
-  else{floorRms=Math.min(floorRms*1.0008,.02);
+  // alles in echter Zeit statt in Bildern: das iPhone liefert mal 60, mal nur 30 Bilder/s (Stromsparmodus, Wärme)
+  const fr=Math.min(4,Math.max(.25,(now-(lastListen||now-16.7))/16.7));lastListen=now;
+  if(rms<th){const a=1-Math.pow(.97,fr);floorRms=Math.max(.0002,floorRms*(1-a)+rms*a);if(!silent)silentSince=now;silent++;if(now-silentSince>=35)onsetFlag=true;}
+  else{floorRms=Math.min(floorRms*Math.pow(1.0008,fr),.02);
        if(!useOnset()&&rmsSlow>0&&rms>rmsSlow*1.5&&now-lastHitTime>140){onsetFlag=true;lastOnsetBeat=curBeat();lastOnsetT=now;}
-       if(silent>2){lastOnsetBeat=curBeat();lastOnsetT=now;}silent=0;}
-  rmsSlow=rmsSlow*.85+rms*.15;decayLvl(now);
+       if(silent&&now-silentSince>=35){lastOnsetBeat=curBeat();lastOnsetT=now;}silent=0;}
+  {const a=1-Math.pow(.85,fr);rmsSlow=rmsSlow*(1-a)+rms*a;}decayLvl(now);
   if(useOnset())specStep(now);
   if(rms<th){hist=[];rawF=[];stableMidi=null;tunBuf=[];return;}
   for(let i=0,k=0;k<ds.length;k++,i+=D){let v=0;for(let j=0;j<D;j++)v+=buf[i+j];ds[k]=v/D;}
@@ -844,6 +846,8 @@ function listen(){
 // – Spektrum nach dem Anschlag minus Spektrum davor; nachklingende Saiten fallen heraus.
 // Zusätzlich weiß die App aus dem Tab, welcher Ton als Nächstes kommt, und prüft gezielt dessen Obertonmuster
 // (eigene, niedrigere Schwelle), und sie erkennt auch leise Anschläge, bei denen nur der erwartete Ton ansteigt.
+// Spektren der letzten ~300 ms mit Zeitstempel; „vor x ms“ wird über die Zeit gesucht, nicht über die Bildanzahl
+function ago(ms,now){for(let i=sring.length-1;i>=0;i--)if(now-sring[i].t>=ms)return sring[i];return null;}
 let an2=null,spec=null,nb=0,binHz=1,lowBin=1,sring=[],fluxH=[],lastOn=-1e9,pend=null,onQ=[],onLog=[],noiseSpec=null,noiseN=0,lastExpOn=-1e9,specStart=0;
 function setupSpec(srcNode,sink){an2=ac.createAnalyser();const N2=ac.sampleRate>=32000?8192:4096;an2.fftSize=N2;an2.smoothingTimeConstant=0;srcNode.connect(an2);an2.connect(sink);
   binHz=ac.sampleRate/N2;nb=Math.min(an2.frequencyBinCount,Math.ceil(5200/binHz));lowBin=Math.floor(70/binHz);spec=new Float32Array(an2.frequencyBinCount);sring=[];fluxH=[];pend=null;onQ=[];noiseSpec=null;noiseN=0;specStart=performance.now();}
@@ -889,21 +893,23 @@ function specStep(now){
   // Raumrauschen merken (nur in ruhigen Momenten)
   if(rms<thr()){noiseN++;if(!noiseSpec)noiseSpec=cur.slice();else for(let i=0;i<nb;i++)noiseSpec[i]=noiseSpec[i]*.95+cur[i]*.05;}
   const warm=now-specStart<800;   // Mikro schwingt sich ein – noch nichts auswerten
-  const ref=sring.length>=3?sring[sring.length-3]:null;let flux=0,tot=0,totN=0;
+  const ref=ago(40,now);let flux=0,tot=0,totN=0;
   // Rauschboden je Frequenz abziehen (wie Whitening bei aubio/madmom): Raumrauschen erzeugt sonst ständig Schein-Zuwachs
   const nz=noiseN>20&&floorRms>=.002?noiseSpec:null;   // nur in lauten Räumen – in leisen Räumen bleibt die strengere Prüfung
   if(ref){for(let i=lowBin;i<nb;i++){let a=cur[i],b=ref.m[i];if(nz){const z=2*nz[i];a=a>z?a-z:0;b=b>z?b-z:0;totN+=Math.sqrt(z);}tot+=Math.sqrt(a);if(a>b)flux+=Math.sqrt(a)-Math.sqrt(b);}}
   const rel=tot+totN>0?flux/(tot+totN):0;   // Rauschanteil im Nenner: reines Rauschen ergibt ~0 statt ~1   // relativer Zuwachs – unabhängig von der Lautstärke (leise Anschläge!)
-  sring.push({m:cur,t:now});if(sring.length>14)sring.shift();
-  fluxH.push(rel);if(fluxH.length>60)fluxH.shift();
-  const srt=[...fluxH].sort((a,b)=>a-b),med=srt[srt.length>>1]||0;
+  sring.push({m:cur,t:now});while(sring.length>2&&now-sring[1].t>320)sring.shift();
+  fluxH.push({v:rel,t:now});while(fluxH.length&&now-fluxH[0].t>1000)fluxH.shift();
+  const srt=fluxH.map(x=>x.v).sort((a,b)=>a-b),med=srt[srt.length>>1]||0;
   const on=!warm&&ref&&rel>Math.max(med*2.5,.08)&&rms>gate()*.7&&now-lastOn>110;
-  if(on){lastOn=now;lastOnsetT=now;lastOnsetBeat=curBeat();onsetFlag=true;
-    pend={t:now-micLat,beat:curBeat()-micLat/1000*bpm/60,pre:sring[Math.max(0,sring.length-5)].m,n:0,acc:new Float32Array(nb),peak:rms};}
   const exp=expTargets();
+  // schnelles Spiel: kommt der nächste Anschlag, bevor der vorige fertig ausgewertet ist, wird der vorige sofort ausgewertet statt verworfen
+  if(on&&pend){const P=pend;pend=null;if(now-P.t0>=60)finP(P,exp);}
+  if(on){lastOn=now;lastOnsetT=now;lastOnsetBeat=curBeat();onsetFlag=true;
+    pend={t:now-micLat,beat:curBeat()-micLat/1000*bpm/60,pre:(ago(80,now)||sring[0]).m,n:0,t0:now,acc:new Float32Array(nb),peak:rms};}
   // Stufe 2: leiser Anschlag ohne deutlichen Gesamt-Zuwachs – der ERWARTETE Ton steigt aber klar an
-  if(!warm&&!pend&&noiseN>20&&exp.length&&sring.length>=8&&now-lastOn>250&&now-lastExpOn>250&&playLvl>0&&rms>=Math.max(gate(),playLvl*.35)&&stableMidi!==null){
-    const old=sring[sring.length-8].m;
+  if(!warm&&!pend&&noiseN>20&&exp.length&&ago(130,now)&&now-lastOn>250&&now-lastExpOn>250&&playLvl>0&&rms>=Math.max(gate(),playLvl*.35)&&stableMidi!==null){
+    const old=ago(130,now).m;
     for(const t of exp){
       if(lastHitPc===pc(t.m)&&now-lastHitTime<450)continue;
       if(pc(stableMidi)!==pc(t.m))continue;                          // Tonhöhenerkennung muss denselben Ton hören      // eben getroffener Ton klingt noch an – kein zweiter Treffer
@@ -915,8 +921,11 @@ function specStep(now){
         const r={t:now-60-micLat,beat:curBeat()-(60+micLat)/1000*bpm/60,notes:[t.m],exp:[t.m],top:t.m,soft:true};onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();break;}}}
   if(pend){pend.n++;if(rms>pend.peak)pend.peak=rms;
     // Zuwachs gegenüber vor dem Anschlag aufsummieren (Frames 3–9 ≈ 50–150 ms)
-    if(pend.n>=3)for(let i=0;i<nb;i++){const d=cur[i]-pend.pre[i];if(d>0)pend.acc[i]+=d;}
-    if(pend.n>=9){const P=pend;pend=null;
+    if(now-pend.t0>=45)for(let i=0;i<nb;i++){const d=cur[i]-pend.pre[i];if(d>0)pend.acc[i]+=d;}
+    if(now-pend.t0>=140){const P=pend;pend=null;finP(P,exp);}}
+}
+// Anschlag auswerten (eigene Funktion: wird auch vorzeitig aufgerufen, wenn schon der nächste Anschlag kommt)
+function finP(P,exp){
       if(P.peak<gate()){
         // nur wegen der gelernten (lauten) Anschlagstärke zu leise, aber klar über dem Raum: du spielst jetzt leiser → Stärke nachführen
         if(playLvl&&P.peak>=baseGate()*1.3){const {sc,mx}=noteScores(P.acc);const w=mx>0&&sc.reduce((a,b)=>b.s>a.s?b:a);if(w&&harmShare(P.acc,w.m)>=.5)playLvl=Math.max(P.peak*2,playLvl*.5);}
@@ -926,15 +935,18 @@ function specStep(now){
       if(!win.length)return;
       // Tonhaltigkeit: klarer Ton ≥ 30 %; darunter „unsicher“ – zählt nur, wenn er so laut ist wie deine echten Anschläge
       const weak=harmShare(P.acc,win[0].m)<.3;
-      if(weak&&!(playLvl>0&&P.peak>=.5*playLvl))return;           // Klacken, Rauschen, Murmeln
+      if(weak&&!(playLvl>0&&P.peak>=.3*playLvl))return;           // Klacken, Rauschen, Murmeln
       // erwartete Töne: eigene Prüfung, aber nur wenn sie zu den stärksten neuen Tönen gehören und ihr Grundton/1. Oberton da ist
-      const ex=[];for(const t of exp){const v=tmpl(P.acc,t.m,t.s),f=fOf(t.m),lo=Math.max(pk(P.acc,f),pk(P.acc,2*f));if(v>=(weak?.6:.8)*mx&&harmShare(P.acc,t.m)>=(weak?.15:.3)&&lo>0){ex.push(t.m);continue;}
+      const ex=[];for(const t of exp){const v=tmpl(P.acc,t.m,t.s),f=fOf(t.m),lo=Math.max(pk(P.acc,f),pk(P.acc,2*f));const sub=[12,19,24,28].includes(win[0].m-t.m);   // lautester Ton ist ein Oberton des erwarteten → dessen Grundton muss selbst deutlich da sein
+        if(v>=(weak?.6:.8)*mx&&harmShare(P.acc,t.m)>=(weak?.15:.3)&&lo>0&&(!sub||lo>=.3*pk(P.acc,fOf(win[0].m)))){ex.push(t.m);continue;}
         // tiefer Ton, dessen Oberton (Oktave/Quinte/2 Oktaven darüber) am lautesten klingt: zählt nur, wenn sein Grundton/1. Oberton
         // mindestens so stark neu ansteigt wie der Grundton des lauten Obertons selbst (ein echter höherer Ton hat dort nichts)
-        const d=win[0].m-t.m;if(!weak&&[12,19,24].includes(d)&&harmShare(P.acc,t.m)>=.15&&lo>=pk(P.acc,fOf(win[0].m)))ex.push(t.m);}
+        const d=win[0].m-t.m;if(!weak&&[12,19,24].includes(d)&&harmShare(P.acc,t.m)>=.15&&lo>=pk(P.acc,fOf(win[0].m))){ex.push(t.m);continue;}
+        // dieselbe Saite nochmal angeschlagen, während sie noch klingt (z. B. Melodie auf leeren Saiten): der Ton steigt nur wenig an.
+        // Zählt bei einem kräftigen, klaren Anschlag, wenn der erwartete Ton eben noch klang und deutlich mit ansteigt
+        if(recent.some(m=>pc(m)===pc(t.m))&&playLvl>0&&P.peak>=.5*playLvl&&v>=.5*mx&&harmShare(P.acc,t.m)>=.15&&lo>=.3*pk(P.acc,fOf(win[0].m))&&![12,19,24,28].includes(t.m-win[0].m))ex.push(t.m);}
       const r={t:P.t,beat:P.beat,notes:weak?[]:win.map(x=>x.m),exp:ex,top:weak?null:win[0].m,peak:P.peak,weak};
-      onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();}}
-}
+      onQ.push(r);onLog.push(r);if(onLog.length>12)onLog.shift();}
 // Passt ein Anschlag zum Zielton (oder einem Ton des Akkords)?
 function onsetMatches(r,ev){if(!ev)return false;const tg=[ev,...(ev.alts||[])],oct=$('#octTol').checked;
   const eq=m=>tg.some(t=>oct?pc(m)===pc(t.midi):Math.abs(m-t.midi)===0||Math.abs(m-t.midi)===12);
@@ -999,9 +1011,10 @@ function hitCurrent(manual){
   if(idx>=events.length)finish();else if($('#autoPlay').checked)setTimeout(()=>pluck(events[idx].midi),120);
   updHud();}
 
+// Hören läuft im eigenen Takt (~66×/s), unabhängig davon, wie oft das iPhone den Bildschirm neu zeichnet
+setInterval(listen,window.__LR||15);
 function tick(){
   const now=performance.now(),dt=Math.min(.25,(now-lastTick)/1000);lastTick=now;
-  listen();
   if(running&&!paused){
     addTime(dt);
     if(mode==='wait'){
@@ -1011,7 +1024,9 @@ function tick(){
         while(onQ.length&&!done){const r=onQ.shift();if(r.t<=lastUsedOn)continue;
           // gleicher Ton nochmal: nur ein neuer Anschlag mit etwas Abstand zählt (kein Doppel-Auslöser)
           if(lastHitPc===pc(ev.midi)&&r.t-lastUsedOn<280)continue;
-          if(onsetMatches(r,ev)){lastUsedOn=r.t;aheadT=0;learnLvl(r.peak);hitCurrent(false);done=true;}
+          if(onsetMatches(r,ev)){lastUsedOn=r.t;const ah=aheadT;aheadT=0;learnLvl(r.peak);hitCurrent(false);
+            // der Folgeton wurde vorher schon gehört (dieser Ton kam nur verspätet/als Nachklang an) → Folgeton gleich mit gutschreiben
+            if(ah&&ah<r.t&&events[idx])hitCurrent(false);done=true;}
           // Ton ausgelassen? Erst nach zwei klaren Anschlägen auf die Folgetöne nachziehen
           else if(aheadT&&onsetMatches(r,events[idx+2])){ev.state='miss';misses++;idx++;lastUsedOn=r.t;hitCurrent(false);hitCurrent(false);aheadT=0;done=true;}
           else if(onsetMatches(r,events[idx+1])){aheadT=r.t;}
